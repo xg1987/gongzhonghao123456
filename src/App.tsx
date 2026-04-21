@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { Settings, Send, Copy, Check, Image as ImageIcon, X } from 'lucide-react';
+import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles } from 'lucide-react';
 
 const DEFAULT_MARKDOWN = `## 财帛宫：你天生适合哪种财路
 
@@ -45,6 +45,11 @@ export default function App() {
   
   const [copied, setCopied] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
+
+  // AI image generation state
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [genError, setGenError] = useState('');
 
   useEffect(() => {
     const savedAppId = localStorage.getItem('wechat_appid');
@@ -148,6 +153,44 @@ export default function App() {
       setPushError(err.message);
     } finally {
       setIsPushing(false);
+    }
+  };
+
+  const handleGenerateImage = async () => {
+    const promptText = aiPrompt.trim() || (title ? `${title}，中国风水墨画，玄学氛围，金色点缀，高级质感` : '');
+    if (!promptText) {
+      setGenError('请先输入提示词，或在上方填好文章标题');
+      return;
+    }
+    setIsGenerating(true);
+    setGenError('');
+    try {
+      const resp = await fetch('/api/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: promptText }),
+      });
+      let data;
+      const ct = resp.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        data = await resp.json();
+      } else {
+        const text = await resp.text();
+        throw new Error(`生成失败: 服务器返回非 JSON (HTTP ${resp.status}) ${text.substring(0, 100)}`);
+      }
+      if (!resp.ok) throw new Error(data.error || '生成图片失败');
+
+      // Convert data URL → Blob → File, then feed existing coverImage flow
+      const dataUrl: string = data.imageDataUrl;
+      const blobResp = await fetch(dataUrl);
+      const blob = await blobResp.blob();
+      const file = new File([blob], `ai-cover-${Date.now()}.png`, { type: blob.type || 'image/png' });
+      setCoverImage(file);
+      setUploadedMediaId(''); // reset cache so it will re-upload to wechat
+    } catch (err: any) {
+      setGenError(err.message || '生成图片失败');
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -341,6 +384,41 @@ export default function App() {
                   placeholder="选填"
                 />
               </div>
+              <div className="p-3 bg-gradient-to-br from-purple-50 to-pink-50 border border-purple-200 rounded-md">
+                <label className="flex items-center gap-1.5 text-sm font-medium text-purple-800 mb-2">
+                  <Sparkles size={14} /> AI 生成封面（可选）
+                </label>
+                <textarea
+                  value={aiPrompt}
+                  onChange={(e) => setAiPrompt(e.target.value)}
+                  rows={2}
+                  className="w-full px-3 py-2 text-sm border border-purple-200 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-400 resize-none bg-white"
+                  placeholder="输入画面描述。留空则用文章标题 + 默认风格（中国风水墨、玄学、金色）"
+                />
+                {genError && (
+                  <div className="mt-2 p-2 bg-red-50 text-red-700 text-xs rounded border border-red-200 break-words">
+                    {genError}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={handleGenerateImage}
+                  disabled={isGenerating}
+                  className="mt-2 px-3 py-1.5 text-xs font-medium text-white bg-purple-600 rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                >
+                  {isGenerating ? (
+                    <>
+                      <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      生成中（约 15~30 秒）...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={12} /> 生成封面图
+                    </>
+                  )}
+                </button>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">封面图 <span className="text-red-500">*</span></label>
                 <div className="flex items-center gap-4">

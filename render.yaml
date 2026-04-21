@@ -1,0 +1,20 @@
+# Render Blueprint - https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: gongzhonghao-wechat
+    runtime: node
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"
+      # 硅基流动 API Key（部署后在 Render Dashboard -> Environment 里填真实值）
+      - key: SILICONFLOW_API_KEY
+        sync: false
