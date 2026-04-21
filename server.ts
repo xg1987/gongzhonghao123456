@@ -9,7 +9,7 @@ import { marked } from 'marked';
 import juice from 'juice';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -65,6 +65,57 @@ app.post('/api/wechat/upload-image', upload.single('image'), async (req, res) =>
     res.json({ mediaId: response.data.media_id, url: response.data.url });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// API: AI Generate Cover Image (via SiliconFlow)
+app.post('/api/generate-image', async (req, res) => {
+  try {
+    const { prompt, model, size } = req.body || {};
+    const apiKey = process.env.SILICONFLOW_API_KEY;
+    if (!apiKey) throw new Error('服务器未配置 SILICONFLOW_API_KEY 环境变量');
+    if (!prompt || typeof prompt !== 'string') throw new Error('请输入生成提示词');
+
+    const sfResponse = await axios.post(
+      'https://api.siliconflow.cn/v1/images/generations',
+      {
+        model: model || 'Kwai-Kolors/Kolors',
+        prompt,
+        image_size: size || '1024x1024',
+        batch_size: 1,
+        num_inference_steps: 20,
+        guidance_scale: 7.5,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 90000,
+      }
+    );
+
+    const imageUrl = sfResponse.data?.images?.[0]?.url;
+    if (!imageUrl) throw new Error('生图服务未返回图片地址');
+
+    // Download the generated image and return as base64 so frontend can
+    // turn it into a File and feed it to the existing wechat upload flow.
+    const imgResp = await axios.get(imageUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
+    });
+    const base64 = Buffer.from(imgResp.data).toString('base64');
+    const mimeType = (imgResp.headers['content-type'] as string) || 'image/png';
+
+    res.json({ imageDataUrl: `data:${mimeType};base64,${base64}` });
+  } catch (error: any) {
+    if (error.response?.data) {
+      const data = error.response.data;
+      const errMsg = typeof data === 'string' ? data : (data.message || JSON.stringify(data));
+      res.status(500).json({ error: `生成图片失败: ${errMsg}` });
+    } else {
+      res.status(500).json({ error: error.message || '生成图片失败' });
+    }
   }
 });
 
