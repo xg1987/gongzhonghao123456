@@ -20,7 +20,7 @@ const upload = multer({ dest: 'uploads/' });
 async function getAccessToken(appId: string, appSecret: string) {
   const url = `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${appId}&secret=${appSecret}`;
   try {
-    const response = await axios.get(url, { timeout: 10000 }); // 10 seconds timeout
+    const response = await axios.get(url, { timeout: 10000 });
     if (response.data.errcode) {
       throw new Error(`获取Token失败: ${response.data.errmsg} (错误码: ${response.data.errcode})。请检查 AppID/AppSecret 是否正确，以及当前服务器 IP 是否已加入微信公众号白名单。`);
     }
@@ -33,7 +33,7 @@ async function getAccessToken(appId: string, appSecret: string) {
   }
 }
 
-// API: Upload Image to WeChat Material Library
+// API: Upload Image to WeChat Material Library (for thumb / cover image)
 app.post('/api/wechat/upload-image', upload.single('image'), async (req, res) => {
   try {
     const { appId, appSecret } = req.body;
@@ -41,22 +41,17 @@ app.post('/api/wechat/upload-image', upload.single('image'), async (req, res) =>
     if (!file) throw new Error('No image provided');
 
     const token = await getAccessToken(appId, appSecret);
-    
+
     const form = new FormData();
     form.append('media', fs.createReadStream(file.path), file.originalname);
 
     const url = `https://api.weixin.qq.com/cgi-bin/material/add_material?access_token=${token}&type=image`;
     const response = await axios.post(url, form, {
       headers: form.getHeaders(),
-      timeout: 20000, // 20 seconds timeout for image upload
+      timeout: 20000,
     });
 
-    // Clean up
-    try {
-      fs.unlinkSync(file.path);
-    } catch (cleanupErr) {
-      console.error('Failed to clean up file:', cleanupErr);
-    }
+    try { fs.unlinkSync(file.path); } catch {}
 
     if (response.data.errcode) {
       throw new Error(`上传封面图失败: ${response.data.errmsg} (错误码: ${response.data.errcode})`);
@@ -68,46 +63,113 @@ app.post('/api/wechat/upload-image', upload.single('image'), async (req, res) =>
   }
 });
 
-// API: AI Generate Cover Image (via SiliconFlow)
+// API: Upload inline article image via uploadimg (does NOT consume material quota)
+// This is used for images embedded inside the article body.
+// WeChat returns a permanent mmbiz.qpic.cn URL that can be put into <img src>.
+app.post('/api/wechat/upload-content-image', async (req, res) => {
+  try {
+    const { appId, appSecret, imageDataUrl, filename } = req.body;
+    if (!imageDataUrl || typeof imageDataUrl !== 'string') throw new Error('缺少图片数据');
+
+    // Parse data URL
+    const match = imageDataUrl.match(/^data:(.+);base64,(.+)$/);
+    if (!match) throw new Error('图片数据格式错误');
+    const mime = match[1];
+    const buf = Buffer.from(match[2], 'base64');
+
+    const token = await getAccessToken(appId, appSecret);
+    const ext = mime.includes('png') ? 'png' : mime.includes('jpeg') ? 'jpg' : 'png';
+    const name = filename || `content-${Date.now()}.${ext}`;
+
+    const form = new FormData();
+    form.append('media', buf, { filename: name, contentType: mime });
+
+    const url = `https://api.weixin.qq.com/cgi-bin/media/uploadimg?access_token=${token}`;
+    const response = await axios.post(url, form, {
+      headers: form.getHeaders(),
+      timeout: 20000,
+    });
+
+    if (response.data.errcode) {
+      throw new Error(`上传正文图失败: ${response.data.errmsg} (错误码: ${response.data.errcode})`);
+    }
+
+    res.json({ url: response.data.url });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ---------------- Image Generation Provider Layer ----------------
+// Currently implements SiliconFlow (supports Flux / Kolors / SD3.5 etc).
+// Kept simple; extend with a switch on `provider` to add 豆包 / OpenAI / Gemini.
+
+const DEFAULT_IMAGE_MODEL = process.env.IMAGE_MODEL || 'black-forest-labs/FLUX.1-dev';
+
+async function callSiliconFlow(params: { model: string; prompt: string; size: string }) {
+  const apiKey = process.env.SILICONFLOW_API_KEY;
+  if (!apiKey) throw new Error('服务器未配置 SILICONFLOW_API_KEY 环境变量');
+
+  const body: Record<string, any> = {
+    model: params.model,
+    prompt: params.prompt,
+    image_size: params.size,
+    batch_size: 1,
+  };
+
+  // Different models have different optimal params
+  if (params.model.includes('FLUX.1-schnell') || params.model.includes('schnell')) {
+    body.num_inference_steps = 4;
+  } else if (params.model.includes('FLUX.1-pro') || params.model.includes('pro')) {
+    // Pro models usually ignore steps on SiliconFlow; keep sane default
+    body.num_inference_steps = 28;
+    body.guidance_scale = 3.5;
+  } else if (params.model.includes('FLUX.1-dev')) {
+    body.num_inference_steps = 28;
+    body.guidance_scale = 3.5;
+  } else {
+    // Kolors / SD3.5 friendly defaults
+    body.num_inference_steps = 20;
+    body.guidance_scale = 7.5;
+  }
+
+  const sfResponse = await axios.post(
+    'https://api.siliconflow.cn/v1/images/generations',
+    body,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 120000,
+    }
+  );
+
+  const imageUrl = sfResponse.data?.images?.[0]?.url;
+  if (!imageUrl) throw new Error('生图服务未返回图片地址');
+
+  const imgResp = await axios.get(imageUrl, {
+    responseType: 'arraybuffer',
+    timeout: 30000,
+  });
+  const base64 = Buffer.from(imgResp.data).toString('base64');
+  const mimeType = (imgResp.headers['content-type'] as string) || 'image/png';
+  return `data:${mimeType};base64,${base64}`;
+}
+
+// API: AI Generate Image (cover or content)
 app.post('/api/generate-image', async (req, res) => {
   try {
     const { prompt, model, size } = req.body || {};
-    const apiKey = process.env.SILICONFLOW_API_KEY;
-    if (!apiKey) throw new Error('服务器未配置 SILICONFLOW_API_KEY 环境变量');
     if (!prompt || typeof prompt !== 'string') throw new Error('请输入生成提示词');
 
-    const sfResponse = await axios.post(
-      'https://api.siliconflow.cn/v1/images/generations',
-      {
-        model: model || 'Kwai-Kolors/Kolors',
-        prompt,
-        image_size: size || '1024x1024',
-        batch_size: 1,
-        num_inference_steps: 20,
-        guidance_scale: 7.5,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 90000,
-      }
-    );
-
-    const imageUrl = sfResponse.data?.images?.[0]?.url;
-    if (!imageUrl) throw new Error('生图服务未返回图片地址');
-
-    // Download the generated image and return as base64 so frontend can
-    // turn it into a File and feed it to the existing wechat upload flow.
-    const imgResp = await axios.get(imageUrl, {
-      responseType: 'arraybuffer',
-      timeout: 30000,
+    const imageDataUrl = await callSiliconFlow({
+      model: model || DEFAULT_IMAGE_MODEL,
+      prompt,
+      size: size || '1024x1024',
     });
-    const base64 = Buffer.from(imgResp.data).toString('base64');
-    const mimeType = (imgResp.headers['content-type'] as string) || 'image/png';
 
-    res.json({ imageDataUrl: `data:${mimeType};base64,${base64}` });
+    res.json({ imageDataUrl });
   } catch (error: any) {
     if (error.response?.data) {
       const data = error.response.data;
@@ -128,9 +190,8 @@ app.post('/api/wechat/push-draft', async (req, res) => {
 
     // Render Markdown to HTML
     let htmlContent = marked.parse(content) as string;
-    
+
     // Convert standard HTML tags to WeChat-friendly <section> and <span> tags
-    // This prevents WeChat's editor from stripping styles or applying its own defaults
     htmlContent = htmlContent.replace(/<blockquote/g, '<section class="wechat-blockquote"');
     htmlContent = htmlContent.replace(/<\/blockquote>/g, '</section>');
     htmlContent = htmlContent.replace(/<p>/g, '<section class="wechat-p">');
@@ -152,12 +213,10 @@ app.post('/api/wechat/push-draft', async (req, res) => {
     htmlContent = htmlContent.replace(/<\/li>/g, '</section>');
     htmlContent = htmlContent.replace(/<hr>/g, '<section class="wechat-hr"></section>');
     htmlContent = htmlContent.replace(/<hr \/>/g, '<section class="wechat-hr"></section>');
-    
-    // Replace <div> with <section> because WeChat editor often strips <div> tags and their styles
+
     htmlContent = htmlContent.replace(/<div/g, '<section');
     htmlContent = htmlContent.replace(/<\/div>/g, '</section>');
-    
-    // Apply CSS and inline it
+
     const css = `
       .wechat-container { padding: 16px; background: #ffffff; }
       .wechat-container, .wechat-p, .wechat-h1, .wechat-h2, .wechat-h3, .wechat-li, .wechat-blockquote, .wechat-strong, .wechat-ul, .wechat-ol, .wechat-hr {
@@ -185,8 +244,7 @@ app.post('/api/wechat/push-draft', async (req, res) => {
       .wechat-ul .wechat-li { list-style-type: disc; }
       .wechat-ol .wechat-li { list-style-type: decimal; }
     `;
-    
-    // Double wrap with section to prevent WeChat from stripping the outermost container
+
     const wrappedHtml = `<section class="wechat-container"><section>${htmlContent}</section></section>`;
     const styledHtml = juice.inlineContent(wrappedHtml, css, {
       inlinePseudoElements: true,
@@ -208,7 +266,7 @@ app.post('/api/wechat/push-draft', async (req, res) => {
       ]
     };
 
-    const response = await axios.post(url, payload, { timeout: 15000 }); // 15 seconds timeout
+    const response = await axios.post(url, payload, { timeout: 15000 });
 
     if (response.data.errcode) {
       throw new Error(`推送草稿失败: ${response.data.errmsg} (错误码: ${response.data.errcode})`);
