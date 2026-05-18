@@ -18,12 +18,15 @@ services:
       # 硅基流动 API Key（部署后在 Render Dashboard -> Environment 里填真实值）
       - key: SILICONFLOW_API_KEY
         sync: false
-      # 登录访问密码（部署后在 Render Dashboard -> Environment 里填真实值）
-      - key: APP_PASSWORD
-        sync: false
       # 登录 Cookie 签名密钥（建议填随机长字符串）
       - key: AUTH_SECRET
         sync: false
+      # 可选注册码；配置后新用户注册必须填写
+      - key: REGISTRATION_CODE
+        sync: false
+      # 用户数据文件路径；生产环境建议挂载持久化磁盘后改为磁盘路径
+      - key: USER_STORE_PATH
+        value: ./data/users.json
       # 默认生图模型；用户可以在前端"设置"里切换
       - key: IMAGE_MODEL
         value: black-forest-labs/FLUX.1-dev

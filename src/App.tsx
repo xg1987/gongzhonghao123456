@@ -79,6 +79,14 @@ type VoiceUploadRecord = {
   uploadedAt: string;
 };
 
+type AuthUser = {
+  id: string;
+  email: string;
+  name: string;
+};
+
+type AuthMode = 'login' | 'register';
+
 // Scan markdown for ai://prompt placeholders
 function extractAiImages(md: string): { full: string; prompt: string }[] {
   const re = /!\[[^\]]*\]\(ai:\/\/([^)]+)\)/g;
@@ -143,10 +151,12 @@ export default function App() {
   const [showPushModal, setShowPushModal] = useState(false);
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isPasswordConfigured, setIsPasswordConfigured] = useState(true);
-  const [loginPassword, setLoginPassword] = useState('');
-  const [loginError, setLoginError] = useState('');
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode>('login');
+  const [registrationRequiresCode, setRegistrationRequiresCode] = useState(false);
+  const [authForm, setAuthForm] = useState({ name: '', email: '', password: '', inviteCode: '' });
+  const [authError, setAuthError] = useState('');
+  const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
 
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
@@ -195,13 +205,14 @@ export default function App() {
         const data = await resp.json();
         if (mounted) {
           setIsAuthenticated(Boolean(data.authenticated));
-          setIsPasswordConfigured(data.passwordConfigured !== false);
+          setAuthUser(data.user || null);
+          setRegistrationRequiresCode(Boolean(data.registrationRequiresCode));
         }
       })
       .catch(() => {
         if (mounted) {
           setIsAuthenticated(false);
-          setIsPasswordConfigured(true);
+          setAuthUser(null);
         }
       })
       .finally(() => {
@@ -289,36 +300,51 @@ export default function App() {
     setShowSettings(false);
   };
 
-  const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
+  const updateAuthForm = (field: keyof typeof authForm, value: string) => {
+    setAuthForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const switchAuthMode = (mode: AuthMode) => {
+    setAuthMode(mode);
+    setAuthError('');
+  };
+
+  const handleAuthSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const password = loginPassword.trim();
-    if (!password) {
-      setLoginError('请输入访问密码');
+    if (!authForm.email.trim() || !authForm.password) {
+      setAuthError('请输入邮箱和密码');
+      return;
+    }
+    if (authMode === 'register' && !authForm.name.trim()) {
+      setAuthError('请输入昵称');
       return;
     }
 
-    setIsLoggingIn(true);
-    setLoginError('');
+    setIsSubmittingAuth(true);
+    setAuthError('');
     try {
-      const resp = await fetch('/api/auth/login', {
+      const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
+      const resp = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify(authForm),
       });
       const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || '登录失败');
+      if (!resp.ok) throw new Error(data.error || (authMode === 'register' ? '注册失败' : '登录失败'));
       setIsAuthenticated(true);
-      setLoginPassword('');
+      setAuthUser(data.user || null);
+      setAuthForm({ name: '', email: '', password: '', inviteCode: '' });
     } catch (err: any) {
-      setLoginError(err.message || '登录失败');
+      setAuthError(err.message || (authMode === 'register' ? '注册失败' : '登录失败'));
     } finally {
-      setIsLoggingIn(false);
+      setIsSubmittingAuth(false);
     }
   };
 
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
     setIsAuthenticated(false);
+    setAuthUser(null);
     setShowSettings(false);
     setShowPushModal(false);
   };
@@ -826,53 +852,102 @@ export default function App() {
               <span className="text-green-600">WeChat</span>
               <span>排版助手</span>
             </div>
-            <p className="mt-2 text-sm text-gray-500">
-              {isPasswordConfigured ? '请输入访问密码继续' : '部署者需要先设置访问密码'}
-            </p>
+            <p className="mt-2 text-sm text-gray-500">注册账号后即可进入工作台</p>
           </div>
-          {isPasswordConfigured ? (
-            <form onSubmit={handleLogin} className="p-6 space-y-4">
+          <div className="grid grid-cols-2 gap-1 bg-gray-100 p-1 mx-6 mt-5 rounded-md">
+            <button
+              type="button"
+              onClick={() => switchAuthMode('login')}
+              className={`rounded px-3 py-2 text-sm font-medium ${authMode === 'login' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
+            >
+              登录
+            </button>
+            <button
+              type="button"
+              onClick={() => switchAuthMode('register')}
+              className={`rounded px-3 py-2 text-sm font-medium ${authMode === 'register' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
+            >
+              注册
+            </button>
+          </div>
+          <form onSubmit={handleAuthSubmit} className="p-6 space-y-4">
+            {authMode === 'register' && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">访问密码</label>
-                <div className="relative">
-                  <LockKeyhole size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input
-                    type="password"
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    className="w-full rounded-md border border-gray-300 py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder="请输入访问密码"
-                    autoFocus
-                  />
-                </div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">昵称</label>
+                <input
+                  type="text"
+                  value={authForm.name}
+                  onChange={(e) => updateAuthForm('name', e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  placeholder="请输入昵称"
+                  autoFocus
+                />
               </div>
-              {loginError && (
-                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {loginError}
-                </div>
-              )}
-              <button
-                type="submit"
-                disabled={isLoggingIn}
-                className="w-full rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isLoggingIn ? '登录中...' : '进入工作台'}
-              </button>
-            </form>
-          ) : (
-            <div className="p-6 space-y-4">
-              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                当前线上服务还没有配置登录密码。请部署者在 Render 的 Environment 中添加下面两个变量后重新部署。
-              </div>
-              <div className="rounded-md bg-gray-900 p-3 text-xs text-gray-100">
-                <div>APP_PASSWORD=你的访问密码</div>
-                <div>AUTH_SECRET=一段随机长字符串</div>
-              </div>
-              <p className="text-xs text-gray-500">
-                配置完成后，把这个网址和访问密码发给授权使用者即可。
-              </p>
+            )}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">邮箱</label>
+              <input
+                type="email"
+                value={authForm.email}
+                onChange={(e) => updateAuthForm('email', e.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                placeholder="name@example.com"
+                autoFocus={authMode === 'login'}
+              />
             </div>
-          )}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">密码</label>
+              <div className="relative">
+                <LockKeyhole size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="password"
+                  value={authForm.password}
+                  onChange={(e) => updateAuthForm('password', e.target.value)}
+                  className="w-full rounded-md border border-gray-300 py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  placeholder={authMode === 'register' ? '至少 8 位' : '请输入密码'}
+                />
+              </div>
+            </div>
+            {authMode === 'register' && registrationRequiresCode && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">注册码</label>
+                <input
+                  type="password"
+                  value={authForm.inviteCode}
+                  onChange={(e) => updateAuthForm('inviteCode', e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  placeholder="请输入部署者提供的注册码"
+                />
+              </div>
+            )}
+            {authMode === 'register' && (
+              <p className="text-xs text-gray-500">
+                注册成功后会自动登录。密码只在服务端保存哈希，不保存明文。
+              </p>
+            )}
+            {authError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {authError}
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={isSubmittingAuth}
+              className="w-full rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSubmittingAuth ? '处理中...' : authMode === 'register' ? '注册并进入' : '登录'}
+            </button>
+            <div className="text-center text-xs text-gray-500">
+              {authMode === 'register' ? '已有账号？' : '还没有账号？'}
+              <button
+                type="button"
+                onClick={() => switchAuthMode(authMode === 'register' ? 'login' : 'register')}
+                className="ml-1 font-medium text-green-700 hover:text-green-800"
+              >
+                {authMode === 'register' ? '去登录' : '去注册'}
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     );
@@ -886,6 +961,11 @@ export default function App() {
           <span className="text-green-600">WeChat</span> 排版助手
         </h1>
         <div className="flex items-center gap-3">
+          {authUser && (
+            <span className="hidden sm:inline text-sm text-gray-500">
+              {authUser.name}
+            </span>
+          )}
           <button
             onClick={handleCopy}
             className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
