@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles, Plus, AlertTriangle, Mic } from 'lucide-react';
+import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles, Plus, AlertTriangle, Mic, LockKeyhole, LogOut } from 'lucide-react';
 
 const DEFAULT_MARKDOWN = `## 财帛宫：你天生适合哪种财路
 
@@ -141,6 +141,11 @@ export default function App() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [showPushModal, setShowPushModal] = useState(false);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
@@ -181,6 +186,24 @@ export default function App() {
   // Insert-inline-image mini dialog state
   const [showInsertDialog, setShowInsertDialog] = useState(false);
   const [insertPrompt, setInsertPrompt] = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+    fetch('/api/auth/status')
+      .then(async (resp) => {
+        const data = await resp.json();
+        if (mounted) setIsAuthenticated(Boolean(data.authenticated));
+      })
+      .catch(() => {
+        if (mounted) setIsAuthenticated(false);
+      })
+      .finally(() => {
+        if (mounted) setIsAuthChecking(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     const savedAppId = localStorage.getItem('wechat_appid');
@@ -257,6 +280,40 @@ export default function App() {
     localStorage.setItem('style_preset', stylePreset);
     localStorage.setItem('custom_style', customStyle);
     setShowSettings(false);
+  };
+
+  const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const password = loginPassword.trim();
+    if (!password) {
+      setLoginError('请输入访问密码');
+      return;
+    }
+
+    setIsLoggingIn(true);
+    setLoginError('');
+    try {
+      const resp = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || '登录失败');
+      setIsAuthenticated(true);
+      setLoginPassword('');
+    } catch (err: any) {
+      setLoginError(err.message || '登录失败');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    setIsAuthenticated(false);
+    setShowSettings(false);
+    setShowPushModal(false);
   };
 
   // Build full prompt with style suffix
@@ -742,6 +799,61 @@ export default function App() {
     return <img {...props} />;
   };
 
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="flex items-center gap-3 text-sm text-gray-600">
+          <div className="w-4 h-4 border-2 border-green-600 border-t-transparent rounded-full animate-spin"></div>
+          正在检查登录状态...
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+        <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white shadow-sm">
+          <div className="px-6 pt-6 pb-4 border-b border-gray-100">
+            <div className="flex items-center gap-2 text-xl font-bold text-gray-800">
+              <span className="text-green-600">WeChat</span>
+              <span>排版助手</span>
+            </div>
+            <p className="mt-2 text-sm text-gray-500">请输入访问密码继续</p>
+          </div>
+          <form onSubmit={handleLogin} className="p-6 space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">访问密码</label>
+              <div className="relative">
+                <LockKeyhole size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="password"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  className="w-full rounded-md border border-gray-300 py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  placeholder="请输入访问密码"
+                  autoFocus
+                />
+              </div>
+            </div>
+            {loginError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {loginError}
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={isLoggingIn}
+              className="w-full rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isLoggingIn ? '登录中...' : '进入工作台'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       {/* Header */}
@@ -770,6 +882,13 @@ export default function App() {
           >
             <Send size={16} />
             推送/上传
+          </button>
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+          >
+            <LogOut size={16} />
+            退出
           </button>
         </div>
       </header>

@@ -9,6 +9,7 @@
 - 普通文章草稿推送到微信公众号草稿箱
 - 贴图草稿 `newspic` 推送，最多 20 张图片
 - 音频上传为微信永久语音素材，并返回可复制的 `media_id`
+- 访问密码登录，未登录无法看到编辑器或调用接口
 - AI 生成封面图和正文插图
 - `![](ai://提示词)` 正文插图占位，推送时自动生成并上传到微信
 - 文字草稿自动保存到本地浏览器
@@ -30,6 +31,8 @@ AI 生图需要在 `.env.local` 中配置：
 
 ```bash
 SILICONFLOW_API_KEY="你的硅基流动 API Key"
+APP_PASSWORD="你的访问密码"
+AUTH_SECRET="一段随机长字符串"
 ```
 
 ## 部署
@@ -37,6 +40,8 @@ SILICONFLOW_API_KEY="你的硅基流动 API Key"
 仓库包含 `render.yaml`，可通过 Render Blueprint 部署。生产环境需要配置：
 
 - `SILICONFLOW_API_KEY`
+- `APP_PASSWORD`
+- `AUTH_SECRET`
 - `IMAGE_MODEL`，默认 `black-forest-labs/FLUX.1-dev`
 
 微信接口还要求把部署服务的出口 IP 加入微信公众号后台 IP 白名单。
