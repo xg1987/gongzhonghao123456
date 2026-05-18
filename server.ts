@@ -5,17 +5,90 @@ import multer from 'multer';
 import FormData from 'form-data';
 import fs from 'fs';
 import path from 'path';
+import { spawn } from 'child_process';
+import { createRequire } from 'module';
 import { marked } from 'marked';
 import juice from 'juice';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const MAX_VOICE_BYTES = 2 * 1024 * 1024;
+const require = createRequire(import.meta.url);
+const ffmpegPath = (require('ffmpeg-static') as string | null) || 'ffmpeg';
+const MAX_STORY_AUDIO_BYTES = 50 * 1024 * 1024;
+const MAX_WECHAT_VIDEO_BYTES = 10 * 1024 * 1024;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const upload = multer({ dest: 'uploads/' });
+
+function sanitizeMaterialTitle(raw: string | undefined, fallback: string) {
+  const title = (raw || fallback).replace(/\.[^.]+$/, '').replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ').trim();
+  return title.substring(0, 64) || '长故事音频';
+}
+
+function isSupportedStoryAudio(file: Express.Multer.File) {
+  return /\.(mp3|m4a|aac|wav|ogg|flac|amr|wma)$/i.test(file.originalname) || /^audio\//i.test(file.mimetype);
+}
+
+function runFfmpeg(args: string[]) {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(ffmpegPath, args);
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`音频转视频失败: ${stderr.slice(-800) || `ffmpeg exited ${code}`}`));
+      }
+    });
+  });
+}
+
+async function convertStoryAudioToVideo(inputPath: string, outputPath: string) {
+  const audioBitrates = ['48k', '32k', '24k'];
+
+  for (const bitrate of audioBitrates) {
+    try { fs.unlinkSync(outputPath); } catch {}
+    await runFfmpeg([
+      '-y',
+      '-f', 'lavfi',
+      '-i', 'color=c=0x111827:s=1280x720:r=1',
+      '-i', inputPath,
+      '-shortest',
+      '-map', '0:v:0',
+      '-map', '1:a:0',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-tune', 'stillimage',
+      '-pix_fmt', 'yuv420p',
+      '-r', '1',
+      '-c:a', 'aac',
+      '-b:a', bitrate,
+      '-ac', '1',
+      '-ar', '44100',
+      '-movflags', '+faststart',
+      outputPath,
+    ]);
+
+    const size = fs.statSync(outputPath).size;
+    if (size <= MAX_WECHAT_VIDEO_BYTES) {
+      return { size, bitrate };
+    }
+  }
+
+  const finalSize = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
+  throw new Error(`长故事已转成 MP4，但大小 ${formatBytes(finalSize)} 超过微信视频素材 10MB 限制。请把音频分集，或降低原始音频时长/码率后再上传。`);
+}
+
+function formatBytes(size: number) {
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)}MB`;
+  return `${Math.max(1, Math.round(size / 1024))}KB`;
+}
 
 // Helper to get WeChat Access Token
 async function getAccessToken(appId: string, appSecret: string) {
@@ -64,38 +137,55 @@ app.post('/api/wechat/upload-image', upload.single('image'), async (req, res) =>
   }
 });
 
-// API: Upload voice/audio to WeChat permanent material library.
-// WeChat treats this as a "voice" material, not as a draft article type.
-app.post('/api/wechat/upload-voice', upload.single('voice'), async (req, res) => {
+// API: Upload long story audio as a WeChat permanent video material.
+// WeChat voice materials are capped at 60s, so story audio is converted to MP4.
+app.post('/api/wechat/upload-story-audio', upload.single('audio'), async (req, res) => {
   const file = req.file;
+  let videoPath = '';
   try {
-    const { appId, appSecret } = req.body;
+    const { appId, appSecret, title, introduction } = req.body;
     if (!file) throw new Error('No audio provided');
-    const supportedType = /\.(mp3|amr)$/i.test(file.originalname) || /audio\/(mpeg|mp3|amr)/i.test(file.mimetype);
-    if (!supportedType) throw new Error('音频素材仅支持 MP3 或 AMR 格式');
-    if (file.size > MAX_VOICE_BYTES) throw new Error('音频文件超过微信 2MB 限制');
+    if (!isSupportedStoryAudio(file)) throw new Error('长故事音频支持 MP3、M4A、AAC、WAV、OGG、FLAC、AMR、WMA 格式');
+    if (file.size > MAX_STORY_AUDIO_BYTES) throw new Error(`音频文件 ${formatBytes(file.size)}，超过服务器 50MB 上传限制`);
 
     const token = await getAccessToken(appId, appSecret);
+    const materialTitle = sanitizeMaterialTitle(title, file.originalname);
+    videoPath = path.join(path.dirname(file.path), `${file.filename}-story.mp4`);
+    const converted = await convertStoryAudioToVideo(file.path, videoPath);
 
     const form = new FormData();
-    form.append('media', fs.createReadStream(file.path), file.originalname);
+    form.append('media', fs.createReadStream(videoPath), `${materialTitle}.mp4`);
+    form.append('description', JSON.stringify({
+      title: materialTitle,
+      introduction: (introduction || '长故事音频自动转为视频素材').toString().slice(0, 120),
+    }));
 
-    const url = `https://api.weixin.qq.com/cgi-bin/material/add_material?access_token=${token}&type=voice`;
+    const url = `https://api.weixin.qq.com/cgi-bin/material/add_material?access_token=${token}&type=video`;
     const response = await axios.post(url, form, {
       headers: form.getHeaders(),
-      timeout: 30000,
+      timeout: 180000,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
     });
 
     if (response.data.errcode) {
-      throw new Error(`上传音频素材失败: ${response.data.errmsg} (错误码: ${response.data.errcode})`);
+      throw new Error(`上传长故事视频素材失败: ${response.data.errmsg} (错误码: ${response.data.errcode})`);
     }
 
-    res.json({ mediaId: response.data.media_id, url: response.data.url || '' });
+    res.json({
+      mediaId: response.data.media_id,
+      url: response.data.url || '',
+      videoSize: converted.size,
+      audioBitrate: converted.bitrate,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   } finally {
     if (file) {
       try { fs.unlinkSync(file.path); } catch {}
+    }
+    if (videoPath) {
+      try { fs.unlinkSync(videoPath); } catch {}
     }
   }
 });

@@ -44,15 +44,14 @@ const IMAGE_MODELS: { id: string; label: string; note: string }[] = [
 const MAX_INLINE_IMAGES = 3;
 const MAX_PIC_IMAGES = 20;
 const MAX_COVER_BYTES = 2 * 1024 * 1024;
-const MAX_VOICE_BYTES = 2 * 1024 * 1024;
-const MAX_VOICE_DURATION = 60;
+const MAX_STORY_AUDIO_BYTES = 50 * 1024 * 1024;
 const RECOMMENDED_COVER_RATIO = 900 / 383;
 const CACHE_KEY = 'ai_image_url_cache_v1';
 const DRAFT_KEY = 'wechat_draft_autosave_v1';
-const VOICE_HISTORY_KEY = 'wechat_voice_material_history_v1';
+const STORY_HISTORY_KEY = 'wechat_story_material_history_v1';
 const THEME_KEY = 'wechat_theme_mode_v1';
 
-type DraftType = 'news' | 'newspic' | 'voice';
+type DraftType = 'news' | 'newspic' | 'story';
 type ThemeMode = 'auto' | 'light' | 'dark';
 type ResolvedTheme = 'light' | 'dark';
 
@@ -76,11 +75,17 @@ type PreflightItem = {
   text: string;
 };
 
-type VoiceUploadRecord = {
+type StoryUploadRecord = {
   mediaId: string;
   filename: string;
   uploadedAt: string;
 };
+
+function normalizeDraftType(value: unknown): DraftType {
+  if (value === 'newspic') return 'newspic';
+  if (value === 'story' || value === 'voice') return 'story';
+  return 'news';
+}
 
 function getInitialThemeMode(): ThemeMode {
   if (typeof window === 'undefined') return 'auto';
@@ -140,13 +145,13 @@ function formatDuration(seconds: number | null) {
   return `${minutes}:${rest}`;
 }
 
-function isSupportedVoiceFile(file: File) {
-  return /\.(mp3|amr)$/i.test(file.name) || /audio\/(mpeg|mp3|amr)/i.test(file.type);
+function isSupportedStoryAudioFile(file: File) {
+  return /\.(mp3|m4a|aac|wav|ogg|flac|amr|wma)$/i.test(file.name) || /^audio\//i.test(file.type);
 }
 
-function loadVoiceHistory(): VoiceUploadRecord[] {
+function loadStoryHistory(): StoryUploadRecord[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(VOICE_HISTORY_KEY) || '[]');
+    const parsed = JSON.parse(localStorage.getItem(STORY_HISTORY_KEY) || '[]');
     return Array.isArray(parsed) ? parsed.slice(0, 5) : [];
   } catch {
     return [];
@@ -174,15 +179,15 @@ export default function App() {
   const [coverImage, setCoverImage] = useState<File | null>(null);
   const [coverMeta, setCoverMeta] = useState<CoverMeta | null>(null);
   const [uploadedMediaId, setUploadedMediaId] = useState<string>('');
-  const [draftType, setDraftType] = useState<DraftType>(savedDraftRef.current.draftType || 'news');
+  const [draftType, setDraftType] = useState<DraftType>(normalizeDraftType(savedDraftRef.current.draftType));
   const [picContent, setPicContent] = useState(savedDraftRef.current.picContent || '');
   const [picImages, setPicImages] = useState<File[]>([]);
-  const [voiceFile, setVoiceFile] = useState<File | null>(null);
-  const [voiceDuration, setVoiceDuration] = useState<number | null>(null);
-  const [voicePreviewUrl, setVoicePreviewUrl] = useState('');
-  const [voiceMediaId, setVoiceMediaId] = useState('');
-  const [voiceHistory, setVoiceHistory] = useState<VoiceUploadRecord[]>(loadVoiceHistory);
-  const [voiceCopied, setVoiceCopied] = useState(false);
+  const [storyFile, setStoryFile] = useState<File | null>(null);
+  const [storyDuration, setStoryDuration] = useState<number | null>(null);
+  const [storyPreviewUrl, setStoryPreviewUrl] = useState('');
+  const [storyMediaId, setStoryMediaId] = useState('');
+  const [storyHistory, setStoryHistory] = useState<StoryUploadRecord[]>(loadStoryHistory);
+  const [storyCopied, setStoryCopied] = useState(false);
 
   const [isPushing, setIsPushing] = useState(false);
   const [pushStatus, setPushStatus] = useState(''); // progress text
@@ -276,27 +281,27 @@ export default function App() {
   }, [coverImage]);
 
   useEffect(() => {
-    if (!voiceFile) {
-      setVoiceDuration(null);
-      setVoicePreviewUrl('');
+    if (!storyFile) {
+      setStoryDuration(null);
+      setStoryPreviewUrl('');
       return;
     }
 
-    const url = URL.createObjectURL(voiceFile);
-    setVoicePreviewUrl(url);
+    const url = URL.createObjectURL(storyFile);
+    setStoryPreviewUrl(url);
     const audio = new Audio(url);
     audio.onloadedmetadata = () => {
-      setVoiceDuration(audio.duration);
+      setStoryDuration(audio.duration);
     };
     audio.onerror = () => {
-      setVoiceDuration(null);
+      setStoryDuration(null);
     };
     return () => URL.revokeObjectURL(url);
-  }, [voiceFile]);
+  }, [storyFile]);
 
   useEffect(() => {
-    try { localStorage.setItem(VOICE_HISTORY_KEY, JSON.stringify(voiceHistory)); } catch {}
-  }, [voiceHistory]);
+    try { localStorage.setItem(STORY_HISTORY_KEY, JSON.stringify(storyHistory)); } catch {}
+  }, [storyHistory]);
 
   const saveSettings = () => {
     localStorage.setItem('wechat_appid', appId);
@@ -367,12 +372,14 @@ export default function App() {
     return uploadData.mediaId;
   };
 
-  const uploadVoiceMaterial = async (voice: File): Promise<string> => {
+  const uploadStoryMaterial = async (audio: File): Promise<string> => {
     const formData = new FormData();
     formData.append('appId', appId);
     formData.append('appSecret', appSecret);
-    formData.append('voice', voice);
-    const uploadRes = await fetch('/api/wechat/upload-voice', { method: 'POST', body: formData });
+    formData.append('title', title.trim() || audio.name.replace(/\.[^.]+$/, ''));
+    formData.append('introduction', digest.trim() || '长故事音频');
+    formData.append('audio', audio);
+    const uploadRes = await fetch('/api/wechat/upload-story-audio', { method: 'POST', body: formData });
     const ct = uploadRes.headers.get('content-type') || '';
     let uploadData: any;
     if (ct.includes('application/json')) {
@@ -380,9 +387,9 @@ export default function App() {
     } else {
       const t = await uploadRes.text();
       if (t.includes('Please wait') || t.includes('正在启动')) throw new Error('服务器正在重启或唤醒中，请等待几秒钟后再试。');
-      throw new Error(`上传音频素材失败: HTTP ${uploadRes.status}`);
+      throw new Error(`上传长故事素材失败: HTTP ${uploadRes.status}`);
     }
-    if (!uploadRes.ok) throw new Error(uploadData.error || '上传音频素材失败');
+    if (!uploadRes.ok) throw new Error(uploadData.error || '上传长故事素材失败');
     return uploadData.mediaId;
   };
 
@@ -478,35 +485,37 @@ export default function App() {
         items.push({ level: 'warning', text: `${oversized.length} 张贴图超过 2MB，可能被微信素材接口拒绝` });
       }
     } else {
-      if (!voiceFile) {
-        items.push({ level: 'error', text: '请选择要上传的音频文件' });
+      if (title.trim()) {
+        items.push({ level: 'ok', text: '故事标题已填写' });
       } else {
-        if (isSupportedVoiceFile(voiceFile)) {
-          items.push({ level: 'ok', text: '音频格式为 MP3/AMR' });
+        items.push({ level: 'error', text: '请填写故事标题' });
+      }
+
+      if (!storyFile) {
+        items.push({ level: 'error', text: '请选择要上传的长故事音频' });
+      } else {
+        if (isSupportedStoryAudioFile(storyFile)) {
+          items.push({ level: 'ok', text: '音频格式可转为微信视频素材' });
         } else {
-          items.push({ level: 'error', text: '音频素材仅支持 MP3 或 AMR 格式' });
+          items.push({ level: 'error', text: '长故事音频支持 MP3、M4A、AAC、WAV、OGG、FLAC、AMR、WMA' });
         }
 
-        if (voiceFile.size > MAX_VOICE_BYTES) {
-          items.push({ level: 'error', text: `音频文件 ${formatFileSize(voiceFile.size)}，超过微信 2MB 限制` });
+        if (storyFile.size > MAX_STORY_AUDIO_BYTES) {
+          items.push({ level: 'error', text: `音频文件 ${formatFileSize(storyFile.size)}，超过 50MB 上传限制` });
         } else {
-          items.push({ level: 'ok', text: `音频大小 ${formatFileSize(voiceFile.size)}，符合 2MB 限制` });
+          items.push({ level: 'ok', text: `音频大小 ${formatFileSize(storyFile.size)}，服务器会压缩成 10MB 内 MP4` });
         }
 
-        if (voiceDuration !== null) {
-          if (voiceDuration > MAX_VOICE_DURATION) {
-            items.push({ level: 'error', text: `音频时长 ${formatDuration(voiceDuration)}，超过微信 60 秒限制` });
-          } else {
-            items.push({ level: 'ok', text: `音频时长 ${formatDuration(voiceDuration)}，符合 60 秒限制` });
-          }
+        if (storyDuration !== null) {
+          items.push({ level: 'ok', text: `音频时长 ${formatDuration(storyDuration)}，按长故事视频素材处理` });
         } else {
-          items.push({ level: 'warning', text: '暂未读取到音频时长，请确认不超过 60 秒' });
+          items.push({ level: 'warning', text: '暂未读取到音频时长，上传时会自动尝试转成 MP4' });
         }
       }
     }
 
     return items;
-  }, [appId, appSecret, title, draftType, coverImage, coverMeta, currentInlineCount, picImages, voiceFile, voiceDuration]);
+  }, [appId, appSecret, title, draftType, coverImage, coverMeta, currentInlineCount, picImages, storyFile, storyDuration]);
 
   const blockingPreflightItems = useMemo(
     () => preflightItems.filter((item) => item.level === 'error'),
@@ -568,22 +577,22 @@ export default function App() {
     }
 
     if (!appId || !appSecret) { setPushError('请先配置 AppID 和 AppSecret'); return; }
-    if (draftType !== 'voice' && !title.trim()) { setPushError('请输入标题'); return; }
+    if (!title.trim()) { setPushError('请输入标题'); return; }
 
-    if (draftType === 'voice') {
-      if (!voiceFile) { setPushError('请选择要上传的音频文件'); return; }
+    if (draftType === 'story') {
+      if (!storyFile) { setPushError('请选择要上传的长故事音频'); return; }
 
       setIsPushing(true);
       setPushError('');
       setPushSuccess(false);
-      setVoiceMediaId('');
+      setStoryMediaId('');
 
       try {
-        setPushStatus('上传音频素材到微信...');
-        const mediaId = await uploadVoiceMaterial(voiceFile);
-        setVoiceMediaId(mediaId);
-        setVoiceHistory((records) => [
-          { mediaId, filename: voiceFile.name, uploadedAt: new Date().toISOString() },
+        setPushStatus('转成长故事 MP4 并上传微信视频素材...');
+        const mediaId = await uploadStoryMaterial(storyFile);
+        setStoryMediaId(mediaId);
+        setStoryHistory((records) => [
+          { mediaId, filename: storyFile.name, uploadedAt: new Date().toISOString() },
           ...records.filter((record) => record.mediaId !== mediaId),
         ].slice(0, 5));
         setPushSuccess(true);
@@ -765,11 +774,11 @@ export default function App() {
     }
   };
 
-  const handleCopyVoiceMediaId = async (mediaId = voiceMediaId) => {
+  const handleCopyStoryMediaId = async (mediaId = storyMediaId) => {
     if (!mediaId) return;
     await navigator.clipboard.writeText(mediaId);
-    setVoiceCopied(true);
-    setTimeout(() => setVoiceCopied(false), 2000);
+    setStoryCopied(true);
+    setTimeout(() => setStoryCopied(false), 2000);
   };
 
   // Custom image renderer: ai:// -> styled placeholder
@@ -1018,14 +1027,14 @@ export default function App() {
                 {pushSuccess && (
                   <div className="p-3 bg-green-50 text-green-700 text-sm rounded-md border border-green-200 flex items-center gap-2 flex-wrap">
                     <Check size={16} />
-                    {draftType === 'voice' ? '音频素材上传成功，media_id 已生成。' : '推送成功！请前往微信公众平台草稿箱查看。'}
-                    {draftType === 'voice' && voiceMediaId && (
+                    {draftType === 'story' ? '长故事视频素材上传成功，media_id 已生成。' : '推送成功！请前往微信公众平台草稿箱查看。'}
+                    {draftType === 'story' && storyMediaId && (
                       <button
                         type="button"
-                        onClick={() => handleCopyVoiceMediaId()}
+                        onClick={() => handleCopyStoryMediaId()}
                         className="ml-auto px-2 py-1 text-xs font-medium text-green-700 bg-white border border-green-200 rounded hover:bg-green-50"
                       >
-                        {voiceCopied ? '已复制' : '复制 media_id'}
+                        {storyCopied ? '已复制' : '复制 media_id'}
                       </button>
                     )}
                   </div>
@@ -1059,10 +1068,10 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setDraftType('voice')}
-                    className={`px-3 py-2 text-sm font-medium rounded transition-colors ${draftType === 'voice' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
+                    onClick={() => setDraftType('story')}
+                    className={`px-3 py-2 text-sm font-medium rounded transition-colors ${draftType === 'story' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
                   >
-                    音频素材
+                    长故事
                   </button>
                 </div>
               </div>
@@ -1096,14 +1105,12 @@ export default function App() {
                 </div>
               )}
 
-              {draftType !== 'voice' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{draftType === 'newspic' ? '贴图标题' : '文章标题'} <span className="text-red-500">*</span></label>
-                  <input type="text" value={title} onChange={(e) => setTitle(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder={draftType === 'newspic' ? '请输入贴图标题' : '请输入文章标题'} />
-                </div>
-              )}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{draftType === 'newspic' ? '贴图标题' : draftType === 'story' ? '故事标题' : '文章标题'} <span className="text-red-500">*</span></label>
+                <input type="text" value={title} onChange={(e) => setTitle(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                  placeholder={draftType === 'newspic' ? '请输入贴图标题' : draftType === 'story' ? '请输入故事标题' : '请输入文章标题'} />
+              </div>
 
               {draftType === 'news' ? (
                 <>
@@ -1221,40 +1228,40 @@ export default function App() {
               ) : (
                 <>
                   <div className="p-3 bg-blue-50 border border-blue-200 rounded-md text-sm text-blue-800">
-                    音频会上传为微信永久语音素材，不会进入草稿箱。上传成功后请复制 media_id，用于自动回复、客服消息或后续接口调用。
+                    长故事音频会先自动转成低码率 MP4，再上传为微信永久视频素材。微信视频素材限制为 10MB，太长的故事建议分集上传。
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">音频文件 <span className="text-red-500">*</span></label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">长故事音频 <span className="text-red-500">*</span></label>
                     <label className="flex items-center justify-center w-full h-28 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50">
                       <div className="flex flex-col items-center text-gray-400">
                         <Mic size={24} className="mb-2" />
-                        <span className="text-sm">点击选择 MP3/AMR 音频</span>
-                        <span className="text-xs mt-1">不超过 2MB，时长不超过 60 秒</span>
+                        <span className="text-sm">点击选择故事音频</span>
+                        <span className="text-xs mt-1">支持 MP3/M4A/AAC/WAV 等，上传后转为 MP4</span>
                       </div>
-                      <input type="file" accept=".mp3,.amr,audio/mpeg,audio/mp3,audio/amr" className="hidden"
+                      <input type="file" accept=".mp3,.m4a,.aac,.wav,.ogg,.flac,.amr,.wma,audio/*" className="hidden"
                         onChange={(e) => {
                           if (e.target.files && e.target.files[0]) {
-                            setVoiceFile(e.target.files[0]);
-                            setVoiceMediaId('');
+                            setStoryFile(e.target.files[0]);
+                            setStoryMediaId('');
                             setPushError('');
                           }
                         }} />
                     </label>
-                    {voiceFile && (
+                    {storyFile && (
                       <div className="mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="font-medium truncate">{voiceFile.name}</p>
+                            <p className="font-medium truncate">{storyFile.name}</p>
                             <p className="text-xs text-gray-500 mt-1">
-                              {formatFileSize(voiceFile.size)} · {formatDuration(voiceDuration)}
+                              {formatFileSize(storyFile.size)} · {formatDuration(storyDuration)}
                             </p>
                           </div>
                           <button
                             type="button"
                             onClick={() => {
-                              setVoiceFile(null);
-                              setVoiceMediaId('');
+                              setStoryFile(null);
+                              setStoryMediaId('');
                             }}
                             className="text-gray-500 hover:text-gray-700 shrink-0"
                             aria-label="移除音频文件"
@@ -1262,38 +1269,38 @@ export default function App() {
                             <X size={18} />
                           </button>
                         </div>
-                        {voicePreviewUrl && <audio src={voicePreviewUrl} controls className="mt-3 w-full" />}
+                        {storyPreviewUrl && <audio src={storyPreviewUrl} controls className="mt-3 w-full" />}
                       </div>
                     )}
                   </div>
 
-                  {voiceMediaId && (
+                  {storyMediaId && (
                     <div className="rounded-md border border-green-200 bg-green-50 p-3">
                       <label className="block text-xs font-medium text-green-800 mb-1">media_id</label>
                       <div className="flex items-center gap-2">
-                        <code className="flex-1 break-all rounded bg-white px-2 py-1 text-xs text-green-900 border border-green-100">{voiceMediaId}</code>
+                        <code className="flex-1 break-all rounded bg-white px-2 py-1 text-xs text-green-900 border border-green-100">{storyMediaId}</code>
                         <button
                           type="button"
-                          onClick={() => handleCopyVoiceMediaId()}
+                          onClick={() => handleCopyStoryMediaId()}
                           className="px-2 py-1 text-xs font-medium text-green-700 bg-white border border-green-200 rounded hover:bg-green-50 shrink-0"
                         >
-                          {voiceCopied ? '已复制' : '复制'}
+                          {storyCopied ? '已复制' : '复制'}
                         </button>
                       </div>
                     </div>
                   )}
 
-                  {voiceHistory.length > 0 && (
+                  {storyHistory.length > 0 && (
                     <div>
                       <h3 className="text-sm font-medium text-gray-700 mb-2">最近上传</h3>
                       <div className="space-y-2">
-                        {voiceHistory.map((record) => (
+                        {storyHistory.map((record) => (
                           <div key={record.mediaId} className="rounded-md border border-gray-200 bg-white p-2 text-xs text-gray-600">
                             <div className="flex items-center justify-between gap-2">
                               <span className="font-medium text-gray-700 truncate">{record.filename}</span>
                               <button
                                 type="button"
-                                onClick={() => handleCopyVoiceMediaId(record.mediaId)}
+                                onClick={() => handleCopyStoryMediaId(record.mediaId)}
                                 className="text-green-700 hover:text-green-800 shrink-0"
                               >
                                 复制
@@ -1317,7 +1324,7 @@ export default function App() {
                 {isPushing ? (
                   <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>推送中...</>
                 ) : (
-                  draftType === 'voice' ? '确认上传' : '确认推送'
+                  draftType === 'story' ? '确认上传' : '确认推送'
                 )}
               </button>
             </div>
