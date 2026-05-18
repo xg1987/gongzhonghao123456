@@ -190,6 +190,58 @@ app.post('/api/wechat/upload-story-audio', upload.single('audio'), async (req, r
   }
 });
 
+// API: Get permanent material details through the same whitelisted server IP.
+app.post('/api/wechat/get-material', async (req, res) => {
+  try {
+    const { appId, appSecret, mediaId } = req.body;
+    if (!mediaId) throw new Error('缺少 media_id');
+
+    const token = await getAccessToken(appId, appSecret);
+    const url = `https://api.weixin.qq.com/cgi-bin/material/get_material?access_token=${token}`;
+    const response = await axios.post(url, { media_id: mediaId }, { timeout: 20000 });
+
+    if (response.data?.errcode) {
+      throw new Error(`获取素材失败: ${response.data.errmsg} (错误码: ${response.data.errcode})`);
+    }
+
+    res.json(response.data);
+  } catch (error: any) {
+    if (error.response?.data) {
+      const data = error.response.data;
+      const errMsg = typeof data === 'string' ? data : (data.errmsg || data.message || JSON.stringify(data));
+      res.status(500).json({ error: errMsg });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// API: Delete an incorrect draft via the same whitelisted server IP.
+app.post('/api/wechat/delete-draft', async (req, res) => {
+  try {
+    const { appId, appSecret, mediaId } = req.body;
+    if (!mediaId) throw new Error('缺少草稿 media_id');
+
+    const token = await getAccessToken(appId, appSecret);
+    const url = `https://api.weixin.qq.com/cgi-bin/draft/delete?access_token=${token}`;
+    const response = await axios.post(url, { media_id: mediaId }, { timeout: 15000 });
+
+    if (response.data?.errcode) {
+      throw new Error(`删除草稿失败: ${response.data.errmsg} (错误码: ${response.data.errcode})`);
+    }
+
+    res.json({ success: true, errcode: response.data?.errcode ?? 0, errmsg: response.data?.errmsg || 'ok' });
+  } catch (error: any) {
+    if (error.response?.data) {
+      const data = error.response.data;
+      const errMsg = typeof data === 'string' ? data : (data.errmsg || data.message || JSON.stringify(data));
+      res.status(500).json({ error: errMsg });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
 // API: Upload inline article image via uploadimg (does NOT consume material quota)
 // This is used for images embedded inside the article body.
 // WeChat returns a permanent mmbiz.qpic.cn URL that can be put into <img src>.
