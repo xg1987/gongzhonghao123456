@@ -9,7 +9,7 @@
 - 普通文章草稿推送到微信公众号草稿箱
 - 贴图草稿 `newspic` 推送，最多 20 张图片
 - 音频上传为微信永久语音素材，并返回可复制的 `media_id`
-- 用户注册/登录，未登录无法看到编辑器或调用接口
+- 访问密码登录，未登录无法看到编辑器或调用接口
 - AI 生成封面图和正文插图
 - `![](ai://提示词)` 正文插图占位，推送时自动生成并上传到微信
 - 文字草稿自动保存到本地浏览器
@@ -31,8 +31,8 @@ AI 生图需要在 `.env.local` 中配置：
 
 ```bash
 SILICONFLOW_API_KEY="你的硅基流动 API Key"
+APP_PASSWORD="你的访问密码"
 AUTH_SECRET="一段随机长字符串"
-REGISTRATION_CODE="可选注册码"
 ```
 
 ## 部署
@@ -40,15 +40,14 @@ REGISTRATION_CODE="可选注册码"
 仓库包含 `render.yaml`，可通过 Render Blueprint 部署。生产环境需要配置：
 
 - `SILICONFLOW_API_KEY`
+- `APP_PASSWORD`
 - `AUTH_SECRET`
-- `REGISTRATION_CODE`，可选；配置后注册必须填写注册码
-- `USER_STORE_PATH`，可选；默认 `./data/users.json`
 - `IMAGE_MODEL`，默认 `black-forest-labs/FLUX.1-dev`
 
 微信接口还要求把部署服务的出口 IP 加入微信公众号后台 IP 白名单。
 
-## 用户注册
+## 访问控制
 
-用户账号保存在服务端 `USER_STORE_PATH` 指向的 JSON 文件中，密码只保存 `scrypt` 哈希，不保存明文。
+登录密码必须在部署平台的环境变量里配置，不能写进代码仓库。部署者设置一次 `APP_PASSWORD` 后，把网站地址和这个访问密码发给授权使用者即可。
 
-如果设置了 `REGISTRATION_CODE`，新用户注册时必须填写注册码；如果不设置，任何能访问网站的人都可以注册。生产环境建议挂载持久化磁盘或迁移到数据库，否则普通临时文件可能在重新部署后丢失。
+如果别人 fork 或部署自己的版本，他们需要在自己的 Render 服务里设置自己的 `APP_PASSWORD` 和 `AUTH_SECRET`。

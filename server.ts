@@ -20,26 +20,6 @@ const MAX_VOICE_BYTES = 2 * 1024 * 1024;
 const AUTH_COOKIE = 'wechat_helper_auth';
 const AUTH_TTL_SECONDS = 7 * 24 * 60 * 60;
 const LOCAL_AUTH_SECRET = crypto.randomBytes(32).toString('base64url');
-const USER_STORE_PATH = process.env.USER_STORE_PATH || path.join(process.cwd(), 'data', 'users.json');
-
-type UserRecord = {
-  id: string;
-  email: string;
-  name: string;
-  passwordHash: string;
-  createdAt: string;
-};
-
-type UserStore = {
-  users: UserRecord[];
-};
-
-type AuthPayload = {
-  uid: string;
-  email: string;
-  name: string;
-  exp: number;
-};
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -47,11 +27,11 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 const upload = multer({ dest: 'uploads/' });
 
 function getAuthSecret() {
-  return process.env.AUTH_SECRET || LOCAL_AUTH_SECRET;
+  return process.env.AUTH_SECRET || process.env.APP_PASSWORD || LOCAL_AUTH_SECRET;
 }
 
-function getRegistrationCode() {
-  return process.env.REGISTRATION_CODE || '';
+function getConfiguredPassword() {
+  return process.env.APP_PASSWORD || '';
 }
 
 function getCookieValue(req: Request, name: string) {
@@ -68,84 +48,26 @@ function signPayload(payload: string) {
   return crypto.createHmac('sha256', getAuthSecret()).update(payload).digest('base64url');
 }
 
-function createAuthToken(user: Pick<UserRecord, 'id' | 'email' | 'name'>) {
-  const payload = Buffer.from(JSON.stringify({
-    uid: user.id,
-    email: user.email,
-    name: user.name,
-    exp: Date.now() + AUTH_TTL_SECONDS * 1000,
-  })).toString('base64url');
+function createAuthToken() {
+  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + AUTH_TTL_SECONDS * 1000 })).toString('base64url');
   return `${payload}.${signPayload(payload)}`;
 }
 
-function verifyAuthToken(token: string): AuthPayload | null {
+function verifyAuthToken(token: string) {
   const [payload, signature] = token.split('.');
-  if (!payload || !signature) return null;
+  if (!payload || !signature) return false;
 
   const expectedSignature = signPayload(payload);
   const signatureBuffer = Buffer.from(signature);
   const expectedBuffer = Buffer.from(expectedSignature);
-  if (signatureBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) return null;
+  if (signatureBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) return false;
 
   try {
     const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    if (
-      typeof data.uid === 'string' &&
-      typeof data.email === 'string' &&
-      typeof data.name === 'string' &&
-      typeof data.exp === 'number' &&
-      data.exp > Date.now()
-    ) {
-      return data;
-    }
-    return null;
+    return typeof data.exp === 'number' && data.exp > Date.now();
   } catch {
-    return null;
+    return false;
   }
-}
-
-function ensureUserStoreDir() {
-  fs.mkdirSync(path.dirname(USER_STORE_PATH), { recursive: true });
-}
-
-function readUserStore(): UserStore {
-  try {
-    if (!fs.existsSync(USER_STORE_PATH)) return { users: [] };
-    const data = JSON.parse(fs.readFileSync(USER_STORE_PATH, 'utf8'));
-    return { users: Array.isArray(data.users) ? data.users : [] };
-  } catch {
-    return { users: [] };
-  }
-}
-
-function writeUserStore(store: UserStore) {
-  ensureUserStoreDir();
-  const tempPath = `${USER_STORE_PATH}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify(store, null, 2));
-  fs.renameSync(tempPath, USER_STORE_PATH);
-}
-
-function normalizeEmail(email: string) {
-  return email.trim().toLowerCase();
-}
-
-function createPasswordHash(password: string) {
-  const salt = crypto.randomBytes(16).toString('base64url');
-  const hash = crypto.scryptSync(password, salt, 64).toString('base64url');
-  return `scrypt$${salt}$${hash}`;
-}
-
-function verifyPassword(password: string, passwordHash: string) {
-  const [scheme, salt, storedHash] = passwordHash.split('$');
-  if (scheme !== 'scrypt' || !salt || !storedHash) return false;
-
-  const actualHash = crypto.scryptSync(password, salt, 64);
-  const expectedHash = Buffer.from(storedHash, 'base64url');
-  return actualHash.length === expectedHash.length && crypto.timingSafeEqual(actualHash, expectedHash);
-}
-
-function publicUser(user: Pick<UserRecord, 'id' | 'email' | 'name'>) {
-  return { id: user.id, email: user.email, name: user.name };
 }
 
 function authCookieHeader(token: string) {
@@ -183,76 +105,28 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
 
 app.get('/api/auth/status', (req, res) => {
   const token = getCookieValue(req, AUTH_COOKIE);
-  const auth = verifyAuthToken(token);
-  res.json({
-    authenticated: Boolean(auth),
-    user: auth ? publicUser({ id: auth.uid, email: auth.email, name: auth.name }) : null,
-    registrationRequiresCode: Boolean(getRegistrationCode()),
-  });
+  res.json({ authenticated: verifyAuthToken(token), passwordConfigured: Boolean(getConfiguredPassword()) });
 });
 
 app.post('/api/auth/login', (req, res) => {
-  const email = normalizeEmail(typeof req.body?.email === 'string' ? req.body.email : '');
+  const configuredPassword = getConfiguredPassword();
+  if (!configuredPassword) {
+    res.status(500).json({ error: '服务器未配置 APP_PASSWORD 环境变量' });
+    return;
+  }
+
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  if (!email || !password) {
-    res.status(400).json({ error: '请输入邮箱和密码' });
+  const passwordBuffer = Buffer.from(password);
+  const expectedBuffer = Buffer.from(configuredPassword);
+  const matches = passwordBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(passwordBuffer, expectedBuffer);
+
+  if (!matches) {
+    res.status(401).json({ error: '访问密码不正确' });
     return;
   }
 
-  const store = readUserStore();
-  const user = store.users.find((item) => item.email === email);
-  if (!user || !verifyPassword(password, user.passwordHash)) {
-    res.status(401).json({ error: '邮箱或密码不正确' });
-    return;
-  }
-
-  res.setHeader('Set-Cookie', authCookieHeader(createAuthToken(user)));
-  res.json({ authenticated: true, user: publicUser(user) });
-});
-
-app.post('/api/auth/register', (req, res) => {
-  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-  const email = normalizeEmail(typeof req.body?.email === 'string' ? req.body.email : '');
-  const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  const inviteCode = typeof req.body?.inviteCode === 'string' ? req.body.inviteCode.trim() : '';
-  const registrationCode = getRegistrationCode();
-
-  if (registrationCode && inviteCode !== registrationCode) {
-    res.status(403).json({ error: '注册码不正确' });
-    return;
-  }
-  if (name.length < 2) {
-    res.status(400).json({ error: '昵称至少需要 2 个字符' });
-    return;
-  }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    res.status(400).json({ error: '请输入有效邮箱' });
-    return;
-  }
-  if (password.length < 8) {
-    res.status(400).json({ error: '密码至少需要 8 位' });
-    return;
-  }
-
-  const store = readUserStore();
-  if (store.users.some((user) => user.email === email)) {
-    res.status(409).json({ error: '这个邮箱已经注册' });
-    return;
-  }
-
-  const user: UserRecord = {
-    id: crypto.randomUUID(),
-    email,
-    name,
-    passwordHash: createPasswordHash(password),
-    createdAt: new Date().toISOString(),
-  };
-
-  store.users.push(user);
-  writeUserStore(store);
-
-  res.setHeader('Set-Cookie', authCookieHeader(createAuthToken(user)));
-  res.status(201).json({ authenticated: true, user: publicUser(user) });
+  res.setHeader('Set-Cookie', authCookieHeader(createAuthToken()));
+  res.json({ authenticated: true });
 });
 
 app.post('/api/auth/logout', (_req, res) => {
