@@ -135,6 +135,12 @@ type AnalyticsReport = {
   recommendations: string[];
   notes: string[];
   errors: string[];
+  permissionIssues: Array<{
+    endpoint: string;
+    label: string;
+    code: number;
+    message: string;
+  }>;
 };
 
 function normalizeDraftType(value: unknown): DraftType {
@@ -1143,7 +1149,11 @@ export default function App() {
                         <tbody>
                           {analyticsReport.topArticles.length === 0 && (
                             <tr>
-                              <td colSpan={7} className="px-4 py-6 text-center text-gray-500">暂无文章明细</td>
+                              <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
+                                {analyticsReport.permissionIssues.some((issue) => issue.endpoint.includes('article') || issue.endpoint.includes('biz'))
+                                  ? '图文分析接口未授权，暂时无法读取文章阅读、分享、收藏明细'
+                                  : '暂无文章明细'}
+                              </td>
                             </tr>
                           )}
                           {analyticsReport.topArticles.map((article) => (
@@ -1165,8 +1175,18 @@ export default function App() {
                     </div>
                   </div>
 
-                  {(analyticsReport.errors.length > 0 || analyticsReport.notes.length > 0) && (
+                  {(analyticsReport.permissionIssues.length > 0 || analyticsReport.errors.length > 0 || analyticsReport.notes.length > 0) && (
                     <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 space-y-1">
+                      {analyticsReport.permissionIssues.length > 0 && (
+                        <>
+                          <p className="font-medium">微信 DataCube 接口权限不足（48001）</p>
+                          <p>当前 AppID 被微信拒绝了下面这些统计接口；这不是草稿箱问题，也不是截图问题，代码无法绕过微信的接口权限。</p>
+                          {analyticsReport.permissionIssues.map((issue) => (
+                            <p key={issue.endpoint}>- {issue.label}：{issue.message}</p>
+                          ))}
+                          <p>需要在公众号后台确认账号类型/认证状态、AppID 是否属于当前公众号、开发者是否具备数据统计权限；如果后台没有这些接口权限，就只能等账号开通后再读取。</p>
+                        </>
+                      )}
                       {analyticsReport.notes.map((note) => <p key={note}>{note}</p>)}
                       {analyticsReport.errors.map((error) => <p key={error}>接口提示：{error}</p>)}
                     </div>

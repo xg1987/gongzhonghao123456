@@ -156,11 +156,60 @@ function callWeChatDatacube(token: string, endpoint: string, beginDate: string, 
   return axios.post(url, { begin_date: beginDate, end_date: endDate }, { timeout: 20000 });
 }
 
+type DatacubeError = Error & {
+  errcode?: number;
+  endpoint?: string;
+  errmsg?: string;
+};
+
+type DatacubePermissionIssue = {
+  endpoint: string;
+  label: string;
+  code: number;
+  message: string;
+};
+
+const DATACUBE_ENDPOINT_LABELS: Record<string, string> = {
+  getarticletotaldetail: '图文发表详细数据',
+  getbizsummary: '发表内容概况总数据',
+  getarticlesummary: '图文群发每日数据',
+  getusersummary: '用户增减数据',
+  getusercumulate: '累计用户数据',
+};
+
+function createDatacubeError(endpoint: string, data: any): DatacubeError {
+  const errcode = Number(data.errcode);
+  const errmsg = data.errmsg || '接口返回错误';
+  const error = new Error(`${endpoint}: ${errmsg} (错误码: ${errcode})`) as DatacubeError;
+  error.errcode = errcode;
+  error.endpoint = endpoint;
+  error.errmsg = errmsg;
+  return error;
+}
+
+function isUnauthorizedDatacubeError(error: any) {
+  return Number(error?.errcode) === 48001 || String(error?.message || '').includes('48001');
+}
+
+function buildDatacubePermissionIssues(endpoints: Iterable<string>): DatacubePermissionIssue[] {
+  return Array.from(endpoints).map((endpoint) => {
+    const isArticleEndpoint = endpoint.includes('article') || endpoint.includes('biz');
+    return {
+      endpoint,
+      label: DATACUBE_ENDPOINT_LABELS[endpoint] || endpoint,
+      code: 48001,
+      message: isArticleEndpoint
+        ? '当前公众号/AppID 没有图文分析 DataCube 接口权限，无法读取文章阅读、分享、收藏等数据。'
+        : '当前公众号/AppID 没有用户分析 DataCube 接口权限，无法读取关注增长或累计用户数据。',
+    };
+  });
+}
+
 async function fetchDatacubeList(token: string, endpoint: string, beginDate: string, endDate: string) {
   const response = await callWeChatDatacube(token, endpoint, beginDate, endDate);
   const data = response.data || {};
   if (data.errcode && data.errcode !== 0) {
-    throw new Error(`${endpoint}: ${data.errmsg || '接口返回错误'} (错误码: ${data.errcode})`);
+    throw createDatacubeError(endpoint, data);
   }
   return Array.isArray(data.list) ? data.list : [];
 }
@@ -214,6 +263,7 @@ function buildAnalyticsReport(params: {
   userSummary: any[];
   userCumulate: any[];
   errors: string[];
+  permissionIssues: DatacubePermissionIssue[];
 }) {
   const articleMap = new Map<string, any>();
 
@@ -324,6 +374,7 @@ function buildAnalyticsReport(params: {
     recommendations,
     notes,
     errors: params.errors,
+    permissionIssues: params.permissionIssues,
   };
 }
 
@@ -779,6 +830,7 @@ app.post('/api/wechat/analytics/report', async (req, res) => {
     const startDate = addDays(endDate, -(rangeDays - 1));
     const token = await getAccessToken(appId, appSecret);
     const errors: string[] = [];
+    const unauthorizedEndpoints = new Set<string>();
 
     const articleDetail: any[] = [];
     const articleFallback: any[] = [];
@@ -786,41 +838,37 @@ app.post('/api/wechat/analytics/report', async (req, res) => {
     const userSummary: any[] = [];
     const userCumulate: any[] = [];
 
-    for (const date of listDates(startDate, endDate)) {
-      try {
-        articleDetail.push(...await fetchDatacubeList(token, 'getarticletotaldetail', date, date));
-      } catch (error: any) {
-        errors.push(error.message);
+    const rememberDatacubeError = (endpoint: string, error: any) => {
+      if (isUnauthorizedDatacubeError(error)) {
+        unauthorizedEndpoints.add(endpoint);
+        return;
       }
+      errors.push(error.message || String(error));
+    };
 
+    const maybeFetchDatacubeList = async (endpoint: string, beginDate: string, endDateValue: string) => {
+      if (unauthorizedEndpoints.has(endpoint)) return [];
       try {
-        bizSummary.push(...await fetchDatacubeList(token, 'getbizsummary', date, date));
+        return await fetchDatacubeList(token, endpoint, beginDate, endDateValue);
       } catch (error: any) {
-        errors.push(error.message);
+        rememberDatacubeError(endpoint, error);
+        return [];
       }
+    };
+
+    for (const date of listDates(startDate, endDate)) {
+      articleDetail.push(...await maybeFetchDatacubeList('getarticletotaldetail', date, date));
+      bizSummary.push(...await maybeFetchDatacubeList('getbizsummary', date, date));
 
       // Fallback for accounts that do not have the newer detailed endpoint yet.
       if (articleDetail.length === 0) {
-        try {
-          articleFallback.push(...await fetchDatacubeList(token, 'getarticlesummary', date, date));
-        } catch (error: any) {
-          errors.push(error.message);
-        }
+        articleFallback.push(...await maybeFetchDatacubeList('getarticlesummary', date, date));
       }
     }
 
     for (const chunk of chunkDateRange(startDate, endDate, 7)) {
-      try {
-        userSummary.push(...await fetchDatacubeList(token, 'getusersummary', chunk.beginDate, chunk.endDate));
-      } catch (error: any) {
-        errors.push(error.message);
-      }
-
-      try {
-        userCumulate.push(...await fetchDatacubeList(token, 'getusercumulate', chunk.beginDate, chunk.endDate));
-      } catch (error: any) {
-        errors.push(error.message);
-      }
+      userSummary.push(...await maybeFetchDatacubeList('getusersummary', chunk.beginDate, chunk.endDate));
+      userCumulate.push(...await maybeFetchDatacubeList('getusercumulate', chunk.beginDate, chunk.endDate));
     }
 
     res.json(buildAnalyticsReport({
@@ -833,6 +881,7 @@ app.post('/api/wechat/analytics/report', async (req, res) => {
       userSummary,
       userCumulate,
       errors: Array.from(new Set(errors)).slice(0, 12),
+      permissionIssues: buildDatacubePermissionIssues(unauthorizedEndpoints),
     }));
   } catch (error: any) {
     if (error.response && error.response.data) {
