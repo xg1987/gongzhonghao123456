@@ -42,6 +42,7 @@ const IMAGE_MODELS: { id: string; label: string; note: string }[] = [
 ];
 
 const MAX_INLINE_IMAGES = 3;
+const MAX_PIC_IMAGES = 20;
 const CACHE_KEY = 'ai_image_url_cache_v1';
 
 // Scan markdown for ai://prompt placeholders
@@ -84,6 +85,9 @@ export default function App() {
   const [digest, setDigest] = useState('');
   const [coverImage, setCoverImage] = useState<File | null>(null);
   const [uploadedMediaId, setUploadedMediaId] = useState<string>('');
+  const [draftType, setDraftType] = useState<'news' | 'newspic'>('news');
+  const [picContent, setPicContent] = useState('');
+  const [picImages, setPicImages] = useState<File[]>([]);
 
   const [isPushing, setIsPushing] = useState(false);
   const [pushStatus, setPushStatus] = useState(''); // progress text
@@ -166,6 +170,25 @@ export default function App() {
     return data.url as string;
   };
 
+  const uploadPermanentImage = async (image: File, failureLabel: string): Promise<string> => {
+    const formData = new FormData();
+    formData.append('appId', appId);
+    formData.append('appSecret', appSecret);
+    formData.append('image', image);
+    const uploadRes = await fetch('/api/wechat/upload-image', { method: 'POST', body: formData });
+    const ct = uploadRes.headers.get('content-type') || '';
+    let uploadData: any;
+    if (ct.includes('application/json')) {
+      uploadData = await uploadRes.json();
+    } else {
+      const t = await uploadRes.text();
+      if (t.includes('Please wait') || t.includes('正在启动')) throw new Error('服务器正在重启或唤醒中，请等待几秒钟后再试。');
+      throw new Error(`${failureLabel}: HTTP ${uploadRes.status}`);
+    }
+    if (!uploadRes.ok) throw new Error(uploadData.error || failureLabel);
+    return uploadData.mediaId;
+  };
+
   // ---- AI cover image ----
   const handleGenerateCover = async () => {
     const promptText = aiPrompt.trim() || title;
@@ -222,10 +245,82 @@ export default function App() {
     setShowInsertDialog(false);
   };
 
+  const addPicImages = (files: FileList | null) => {
+    if (!files) return;
+    const incoming = Array.from(files);
+    const next = [...picImages, ...incoming].slice(0, MAX_PIC_IMAGES);
+    if (picImages.length + incoming.length > MAX_PIC_IMAGES) {
+      setPushError(`贴图最多 ${MAX_PIC_IMAGES} 张，已自动保留前 ${MAX_PIC_IMAGES} 张。`);
+    } else {
+      setPushError('');
+    }
+    setPicImages(next);
+  };
+
+  const removePicImage = (index: number) => {
+    setPicImages(picImages.filter((_, i) => i !== index));
+  };
+
   // ---- Push to draft box ----
   const handlePush = async () => {
     if (!appId || !appSecret) { setPushError('请先配置 AppID 和 AppSecret'); return; }
-    if (!title) { setPushError('请输入文章标题'); return; }
+    if (!title.trim()) { setPushError('请输入标题'); return; }
+
+    if (draftType === 'newspic') {
+      if (picImages.length === 0) { setPushError('请至少上传 1 张贴图图片'); return; }
+      if (picImages.length > MAX_PIC_IMAGES) { setPushError(`贴图最多支持 ${MAX_PIC_IMAGES} 张图片`); return; }
+
+      setIsPushing(true);
+      setPushError('');
+      setPushSuccess(false);
+
+      try {
+        const imageMediaIds: string[] = [];
+        for (let i = 0; i < picImages.length; i += 1) {
+          setPushStatus(`上传贴图 ${i + 1}/${picImages.length}...`);
+          const mediaId = await uploadPermanentImage(picImages[i], '上传贴图失败');
+          imageMediaIds.push(mediaId);
+        }
+
+        setPushStatus('推送贴图草稿到微信...');
+        const pushRes = await fetch('/api/wechat/push-draft', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            appId,
+            appSecret,
+            title: title.trim(),
+            content: picContent.trim() || title.trim(),
+            articleType: 'newspic',
+            imageMediaIds,
+          }),
+        });
+        const pct = pushRes.headers.get('content-type') || '';
+        let pushData: any;
+        if (pct.includes('application/json')) {
+          pushData = await pushRes.json();
+        } else {
+          const t = await pushRes.text();
+          if (t.includes('Please wait') || t.includes('正在启动')) throw new Error('服务器正在重启或唤醒中，请等待几秒钟后再试。');
+          throw new Error(`推送贴图草稿失败: HTTP ${pushRes.status}`);
+        }
+        if (!pushRes.ok) throw new Error(pushData.error || '推送贴图草稿失败');
+
+        setPushSuccess(true);
+        setPushStatus('');
+        setTimeout(() => {
+          setShowPushModal(false);
+          setPushSuccess(false);
+        }, 2500);
+      } catch (err: any) {
+        setPushError(err.message);
+        setPushStatus('');
+      } finally {
+        setIsPushing(false);
+      }
+      return;
+    }
+
     if (!coverImage) { setPushError('请上传封面图（微信接口要求必须有封面图）'); return; }
 
     const aiImages = extractAiImages(markdown);
@@ -243,22 +338,7 @@ export default function App() {
       let thumbMediaId = uploadedMediaId;
       if (!thumbMediaId) {
         setPushStatus('上传封面图中...');
-        const formData = new FormData();
-        formData.append('appId', appId);
-        formData.append('appSecret', appSecret);
-        formData.append('image', coverImage);
-        const uploadRes = await fetch('/api/wechat/upload-image', { method: 'POST', body: formData });
-        const ct = uploadRes.headers.get('content-type') || '';
-        let uploadData: any;
-        if (ct.includes('application/json')) {
-          uploadData = await uploadRes.json();
-        } else {
-          const t = await uploadRes.text();
-          if (t.includes('Please wait') || t.includes('正在启动')) throw new Error('服务器正在重启或唤醒中，请等待几秒钟后再试。');
-          throw new Error(`上传封面图失败: HTTP ${uploadRes.status}`);
-        }
-        if (!uploadRes.ok) throw new Error(uploadData.error || '上传封面图失败');
-        thumbMediaId = uploadData.mediaId;
+        thumbMediaId = await uploadPermanentImage(coverImage, '上传封面图失败');
         setUploadedMediaId(thumbMediaId);
       }
 
@@ -312,6 +392,7 @@ export default function App() {
           appId, appSecret, title, author, digest,
           content: finalMarkdown,
           thumbMediaId,
+          articleType: 'news',
         }),
       });
       const pct = pushRes.headers.get('content-type') || '';
@@ -593,79 +674,152 @@ export default function App() {
             )}
 
             <div className="p-6 space-y-4 overflow-y-auto flex-1">
-              {currentInlineCount > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">草稿类型</label>
+                <div className="grid grid-cols-2 gap-2 rounded-md bg-gray-100 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setDraftType('news')}
+                    className={`px-3 py-2 text-sm font-medium rounded transition-colors ${draftType === 'news' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
+                  >
+                    文章
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDraftType('newspic')}
+                    className={`px-3 py-2 text-sm font-medium rounded transition-colors ${draftType === 'newspic' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
+                  >
+                    贴图
+                  </button>
+                </div>
+              </div>
+
+              {draftType === 'news' && currentInlineCount > 0 && (
                 <div className="p-3 bg-purple-50 border border-purple-200 rounded-md text-sm text-purple-800">
                   📸 正文检测到 <b>{currentInlineCount}</b> 张 AI 插图占位。推送时将自动生成、上传到微信、再替换到文章里。
                 </div>
               )}
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">文章标题 <span className="text-red-500">*</span></label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{draftType === 'newspic' ? '贴图标题' : '文章标题'} <span className="text-red-500">*</span></label>
                 <input type="text" value={title} onChange={(e) => setTitle(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder="请输入文章标题" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">作者</label>
-                <input type="text" value={author} onChange={(e) => setAuthor(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder="选填" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">摘要</label>
-                <textarea value={digest} onChange={(e) => setDigest(e.target.value)} rows={3}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
-                  placeholder="选填" />
+                  placeholder={draftType === 'newspic' ? '请输入贴图标题' : '请输入文章标题'} />
               </div>
 
-              <div className="p-3 bg-gradient-to-br from-purple-50 to-pink-50 border border-purple-200 rounded-md">
-                <label className="flex items-center gap-1.5 text-sm font-medium text-purple-800 mb-2">
-                  <Sparkles size={14} /> AI 生成封面（可选）
-                </label>
-                <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} rows={2}
-                  className="w-full px-3 py-2 text-sm border border-purple-200 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-400 resize-none bg-white"
-                  placeholder="输入画面描述。留空则用文章标题" />
-                {genError && (
-                  <div className="mt-2 p-2 bg-red-50 text-red-700 text-xs rounded border border-red-200 break-words">{genError}</div>
-                )}
-                <button type="button" onClick={handleGenerateCover} disabled={isGenerating}
-                  className="mt-2 px-3 py-1.5 text-xs font-medium text-white bg-purple-600 rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5">
-                  {isGenerating ? (
-                    <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>生成中...</>
-                  ) : (
-                    <><Sparkles size={12} /> 生成封面图</>
-                  )}
-                </button>
-              </div>
+              {draftType === 'news' ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">作者</label>
+                    <input type="text" value={author} onChange={(e) => setAuthor(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                      placeholder="选填" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">摘要</label>
+                    <textarea value={digest} onChange={(e) => setDigest(e.target.value)} rows={3}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+                      placeholder="选填" />
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">封面图 <span className="text-red-500">*</span></label>
-                <div className="flex items-center gap-4">
-                  <label className="flex items-center justify-center w-32 h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 overflow-hidden relative shrink-0">
-                    {coverImage ? (
-                      <img src={URL.createObjectURL(coverImage)} alt="Cover" className="w-full h-full object-cover" />
-                    ) : (
+                  <div className="p-3 bg-gradient-to-br from-purple-50 to-pink-50 border border-purple-200 rounded-md">
+                    <label className="flex items-center gap-1.5 text-sm font-medium text-purple-800 mb-2">
+                      <Sparkles size={14} /> AI 生成封面（可选）
+                    </label>
+                    <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} rows={2}
+                      className="w-full px-3 py-2 text-sm border border-purple-200 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-400 resize-none bg-white"
+                      placeholder="输入画面描述。留空则用文章标题" />
+                    {genError && (
+                      <div className="mt-2 p-2 bg-red-50 text-red-700 text-xs rounded border border-red-200 break-words">{genError}</div>
+                    )}
+                    <button type="button" onClick={handleGenerateCover} disabled={isGenerating}
+                      className="mt-2 px-3 py-1.5 text-xs font-medium text-white bg-purple-600 rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5">
+                      {isGenerating ? (
+                        <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>生成中...</>
+                      ) : (
+                        <><Sparkles size={12} /> 生成封面图</>
+                      )}
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">封面图 <span className="text-red-500">*</span></label>
+                    <div className="flex items-center gap-4">
+                      <label className="flex items-center justify-center w-32 h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 overflow-hidden relative shrink-0">
+                        {coverImage ? (
+                          <img src={URL.createObjectURL(coverImage)} alt="Cover" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="flex flex-col items-center text-gray-400">
+                            <ImageIcon size={24} className="mb-2" />
+                            <span className="text-xs">点击上传</span>
+                          </div>
+                        )}
+                        <input type="file" accept="image/*" className="hidden"
+                          onChange={(e) => {
+                            if (e.target.files && e.target.files[0]) {
+                              setCoverImage(e.target.files[0]);
+                              setUploadedMediaId('');
+                            }
+                          }} />
+                      </label>
+                      <div className="text-xs text-gray-500 flex-1">
+                        <p className="text-red-500 font-medium mb-1">微信接口要求必须上传封面图</p>
+                        <p>建议尺寸：900 x 383 像素</p>
+                        <p className="mt-1">支持格式：bmp, png, jpeg, jpg, gif</p>
+                        <p className="mt-1">文件大小：不超过 2MB</p>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">贴图说明</label>
+                    <textarea value={picContent} onChange={(e) => setPicContent(e.target.value)} rows={3}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+                      placeholder="选填。留空时会用标题作为说明" />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-sm font-medium text-gray-700">贴图图片 <span className="text-red-500">*</span></label>
+                      <span className="text-xs text-gray-500">{picImages.length}/{MAX_PIC_IMAGES}</span>
+                    </div>
+                    <label className="flex items-center justify-center w-full h-28 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50">
                       <div className="flex flex-col items-center text-gray-400">
                         <ImageIcon size={24} className="mb-2" />
-                        <span className="text-xs">点击上传</span>
+                        <span className="text-sm">点击选择图片，可一次多选</span>
+                        <span className="text-xs mt-1">最多 20 张，上传后会进入微信素材库</span>
+                      </div>
+                      <input type="file" accept="image/*" multiple className="hidden"
+                        onChange={(e) => {
+                          addPicImages(e.target.files);
+                          e.currentTarget.value = '';
+                        }} />
+                    </label>
+                    {picImages.length > 0 && (
+                      <div className="grid grid-cols-4 gap-2 mt-3">
+                        {picImages.map((file, index) => (
+                          <div key={`${file.name}-${index}`} className="relative aspect-square rounded-md overflow-hidden border border-gray-200 bg-gray-100">
+                            <img src={URL.createObjectURL(file)} alt={`贴图 ${index + 1}`} className="w-full h-full object-cover" />
+                            <button type="button" onClick={() => removePicImage(index)}
+                              className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/75"
+                              aria-label={`删除第 ${index + 1} 张贴图`}>
+                              <X size={14} />
+                            </button>
+                            <div className="absolute left-1 bottom-1 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px]">
+                              {index + 1}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     )}
-                    <input type="file" accept="image/*" className="hidden"
-                      onChange={(e) => {
-                        if (e.target.files && e.target.files[0]) {
-                          setCoverImage(e.target.files[0]);
-                          setUploadedMediaId('');
-                        }
-                      }} />
-                  </label>
-                  <div className="text-xs text-gray-500 flex-1">
-                    <p className="text-red-500 font-medium mb-1">微信接口要求必须上传封面图</p>
-                    <p>建议尺寸：900 x 383 像素</p>
-                    <p className="mt-1">支持格式：bmp, png, jpeg, jpg, gif</p>
-                    <p className="mt-1">文件大小：不超过 2MB</p>
+                    <p className="text-xs text-gray-500 mt-2">
+                      贴图草稿使用微信 newspic 结构，首张图会作为封面；图片需符合公众号素材库规则。
+                    </p>
                   </div>
-                </div>
-              </div>
+                </>
+              )}
             </div>
             <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3 shrink-0">
               <button onClick={() => setShowPushModal(false)}

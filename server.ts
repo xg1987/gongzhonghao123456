@@ -184,9 +184,53 @@ app.post('/api/generate-image', async (req, res) => {
 // API: Push Draft to WeChat
 app.post('/api/wechat/push-draft', async (req, res) => {
   try {
-    const { appId, appSecret, title, author, digest, content, thumbMediaId } = req.body;
+    const {
+      appId,
+      appSecret,
+      title,
+      author,
+      digest,
+      content,
+      thumbMediaId,
+      articleType = 'news',
+      imageMediaIds = [],
+    } = req.body;
 
     const token = await getAccessToken(appId, appSecret);
+    const url = `https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${token}`;
+
+    if (articleType === 'newspic') {
+      if (!Array.isArray(imageMediaIds) || imageMediaIds.length === 0) {
+        throw new Error('贴图草稿至少需要 1 张图片');
+      }
+      if (imageMediaIds.length > 20) {
+        throw new Error('贴图草稿最多支持 20 张图片');
+      }
+
+      const payload = {
+        articles: [
+          {
+            article_type: 'newspic',
+            title,
+            content: content || title || '',
+            image_info: {
+              image_list: imageMediaIds.map((mediaId: string) => ({
+                image_media_id: mediaId,
+              })),
+            },
+          },
+        ],
+      };
+
+      const response = await axios.post(url, payload, { timeout: 15000 });
+
+      if (response.data.errcode) {
+        throw new Error(`推送贴图草稿失败: ${response.data.errmsg} (错误码: ${response.data.errcode})`);
+      }
+
+      res.json({ success: true, mediaId: response.data.media_id });
+      return;
+    }
 
     // Render Markdown to HTML
     let htmlContent = marked.parse(content) as string;
@@ -251,10 +295,10 @@ app.post('/api/wechat/push-draft', async (req, res) => {
       preserveImportant: false
     });
 
-    const url = `https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${token}`;
     const payload = {
       articles: [
         {
+          article_type: 'news',
           title,
           author,
           digest,
