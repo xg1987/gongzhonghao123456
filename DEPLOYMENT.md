@@ -92,7 +92,13 @@ A：回 Render Connect 标签，复制所有 Outbound IP 到微信白名单。
 A：去 Render Dashboard → 服务 → Environment → 检查 `SILICONFLOW_API_KEY` 是否填了值，改完要 **Manual Deploy** 一次才能生效。
 
 **Q：登录页提示服务器未配置 APP_PASSWORD？**
-A：去 Render Dashboard → 服务 → Environment，新增 `APP_PASSWORD` 并重新部署。建议同时配置 `AUTH_SECRET`。
+A：去 Render Dashboard → 服务 → Environment，新增 `APP_PASSWORD` 并重新部署。建议同时配置 `AUTH_SECRET`。这些值不能写进 GitHub 仓库，否则任何看到仓库的人都能拿到密码。
+
+**Q：其他人怎么使用？**
+A：部署者只需要把线上网址和 `APP_PASSWORD` 发给授权使用者。大家使用同一个访问密码登录。如果将来需要每个人一个账号、单独权限或操作记录，再升级为数据库用户系统。
+
+**Q：为什么不自动生成一个默认密码？**
+A：默认密码容易被猜到，也很容易随代码泄露。当前方案把密码放在 Render 环境变量里，代码公开也不会暴露访问密码。
 
 **Q：生图太慢 / 想换模型？**
 A：默认模型是 `black-forest-labs/FLUX.1-dev`（画质更好）。想更快可以在前端「设置」里切到 `black-forest-labs/FLUX.1-schnell`；想更适合中文语义可以切到 `Kwai-Kolors/Kolors`。

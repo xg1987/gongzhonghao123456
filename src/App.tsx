@@ -143,6 +143,7 @@ export default function App() {
   const [showPushModal, setShowPushModal] = useState(false);
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isPasswordConfigured, setIsPasswordConfigured] = useState(true);
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -192,10 +193,16 @@ export default function App() {
     fetch('/api/auth/status')
       .then(async (resp) => {
         const data = await resp.json();
-        if (mounted) setIsAuthenticated(Boolean(data.authenticated));
+        if (mounted) {
+          setIsAuthenticated(Boolean(data.authenticated));
+          setIsPasswordConfigured(data.passwordConfigured !== false);
+        }
       })
       .catch(() => {
-        if (mounted) setIsAuthenticated(false);
+        if (mounted) {
+          setIsAuthenticated(false);
+          setIsPasswordConfigured(true);
+        }
       })
       .finally(() => {
         if (mounted) setIsAuthChecking(false);
@@ -819,36 +826,53 @@ export default function App() {
               <span className="text-green-600">WeChat</span>
               <span>排版助手</span>
             </div>
-            <p className="mt-2 text-sm text-gray-500">请输入访问密码继续</p>
+            <p className="mt-2 text-sm text-gray-500">
+              {isPasswordConfigured ? '请输入访问密码继续' : '部署者需要先设置访问密码'}
+            </p>
           </div>
-          <form onSubmit={handleLogin} className="p-6 space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">访问密码</label>
-              <div className="relative">
-                <LockKeyhole size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input
-                  type="password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  className="w-full rounded-md border border-gray-300 py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder="请输入访问密码"
-                  autoFocus
-                />
+          {isPasswordConfigured ? (
+            <form onSubmit={handleLogin} className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">访问密码</label>
+                <div className="relative">
+                  <LockKeyhole size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type="password"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="请输入访问密码"
+                    autoFocus
+                  />
+                </div>
               </div>
+              {loginError && (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {loginError}
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={isLoggingIn}
+                className="w-full rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isLoggingIn ? '登录中...' : '进入工作台'}
+              </button>
+            </form>
+          ) : (
+            <div className="p-6 space-y-4">
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                当前线上服务还没有配置登录密码。请部署者在 Render 的 Environment 中添加下面两个变量后重新部署。
+              </div>
+              <div className="rounded-md bg-gray-900 p-3 text-xs text-gray-100">
+                <div>APP_PASSWORD=你的访问密码</div>
+                <div>AUTH_SECRET=一段随机长字符串</div>
+              </div>
+              <p className="text-xs text-gray-500">
+                配置完成后，把这个网址和访问密码发给授权使用者即可。
+              </p>
             </div>
-            {loginError && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                {loginError}
-              </div>
-            )}
-            <button
-              type="submit"
-              disabled={isLoggingIn}
-              className="w-full rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isLoggingIn ? '登录中...' : '进入工作台'}
-            </button>
-          </form>
+          )}
         </div>
       </div>
     );
