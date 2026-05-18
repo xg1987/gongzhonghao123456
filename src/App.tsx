@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles, Plus } from 'lucide-react';
+import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles, Plus, AlertTriangle } from 'lucide-react';
 
 const DEFAULT_MARKDOWN = `## 财帛宫：你天生适合哪种财路
 
@@ -43,7 +43,30 @@ const IMAGE_MODELS: { id: string; label: string; note: string }[] = [
 
 const MAX_INLINE_IMAGES = 3;
 const MAX_PIC_IMAGES = 20;
+const MAX_COVER_BYTES = 2 * 1024 * 1024;
+const RECOMMENDED_COVER_RATIO = 900 / 383;
 const CACHE_KEY = 'ai_image_url_cache_v1';
+const DRAFT_KEY = 'wechat_draft_autosave_v1';
+
+type DraftSnapshot = {
+  markdown: string;
+  title: string;
+  author: string;
+  digest: string;
+  draftType: 'news' | 'newspic';
+  picContent: string;
+  aiPrompt: string;
+};
+
+type CoverMeta = {
+  width: number;
+  height: number;
+};
+
+type PreflightItem = {
+  level: 'ok' | 'warning' | 'error';
+  text: string;
+};
 
 // Scan markdown for ai://prompt placeholders
 function extractAiImages(md: string): { full: string; prompt: string }[] {
@@ -68,8 +91,22 @@ function saveCache(c: Record<string, string>) {
   try { localStorage.setItem(CACHE_KEY, JSON.stringify(c)); } catch {}
 }
 
+function loadDraftSnapshot(): Partial<DraftSnapshot> {
+  try {
+    return JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function formatFileSize(size: number) {
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)}MB`;
+  return `${Math.max(1, Math.round(size / 1024))}KB`;
+}
+
 export default function App() {
-  const [markdown, setMarkdown] = useState(DEFAULT_MARKDOWN);
+  const savedDraftRef = useRef<Partial<DraftSnapshot>>(loadDraftSnapshot());
+  const [markdown, setMarkdown] = useState(savedDraftRef.current.markdown || DEFAULT_MARKDOWN);
 
   const [showSettings, setShowSettings] = useState(false);
   const [showPushModal, setShowPushModal] = useState(false);
@@ -80,13 +117,14 @@ export default function App() {
   const [stylePreset, setStylePreset] = useState<keyof typeof STYLE_PRESETS>('inkwash');
   const [customStyle, setCustomStyle] = useState('');
 
-  const [title, setTitle] = useState('');
-  const [author, setAuthor] = useState('');
-  const [digest, setDigest] = useState('');
+  const [title, setTitle] = useState(savedDraftRef.current.title || '');
+  const [author, setAuthor] = useState(savedDraftRef.current.author || '');
+  const [digest, setDigest] = useState(savedDraftRef.current.digest || '');
   const [coverImage, setCoverImage] = useState<File | null>(null);
+  const [coverMeta, setCoverMeta] = useState<CoverMeta | null>(null);
   const [uploadedMediaId, setUploadedMediaId] = useState<string>('');
-  const [draftType, setDraftType] = useState<'news' | 'newspic'>('news');
-  const [picContent, setPicContent] = useState('');
+  const [draftType, setDraftType] = useState<'news' | 'newspic'>(savedDraftRef.current.draftType || 'news');
+  const [picContent, setPicContent] = useState(savedDraftRef.current.picContent || '');
   const [picImages, setPicImages] = useState<File[]>([]);
 
   const [isPushing, setIsPushing] = useState(false);
@@ -99,7 +137,7 @@ export default function App() {
   const editorRef = useRef<HTMLTextAreaElement>(null);
 
   // AI cover image state
-  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiPrompt, setAiPrompt] = useState(savedDraftRef.current.aiPrompt || '');
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState('');
 
@@ -120,6 +158,38 @@ export default function App() {
     if (savedCustom) setCustomStyle(savedCustom);
   }, []);
 
+  useEffect(() => {
+    const snapshot: DraftSnapshot = {
+      markdown,
+      title,
+      author,
+      digest,
+      draftType,
+      picContent,
+      aiPrompt,
+    };
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify(snapshot)); } catch {}
+  }, [markdown, title, author, digest, draftType, picContent, aiPrompt]);
+
+  useEffect(() => {
+    if (!coverImage) {
+      setCoverMeta(null);
+      return;
+    }
+
+    const url = URL.createObjectURL(coverImage);
+    const img = new window.Image();
+    img.onload = () => {
+      setCoverMeta({ width: img.naturalWidth, height: img.naturalHeight });
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => {
+      setCoverMeta(null);
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  }, [coverImage]);
+
   const saveSettings = () => {
     localStorage.setItem('wechat_appid', appId);
     localStorage.setItem('wechat_appsecret', appSecret);
@@ -136,12 +206,12 @@ export default function App() {
   };
 
   // Call backend to generate image, return data URL
-  const generateImage = async (rawPrompt: string): Promise<string> => {
+  const generateImage = async (rawPrompt: string, size = '1024x1024'): Promise<string> => {
     const fullPrompt = buildFullPrompt(rawPrompt);
     const resp = await fetch('/api/generate-image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: fullPrompt, model: imageModel }),
+      body: JSON.stringify({ prompt: fullPrompt, model: imageModel, size }),
     });
     const ct = resp.headers.get('content-type') || '';
     if (!ct.includes('application/json')) {
@@ -199,7 +269,7 @@ export default function App() {
     setIsGenerating(true);
     setGenError('');
     try {
-      const dataUrl = await generateImage(promptText);
+      const dataUrl = await generateImage(promptText, '960x384');
       const blob = await (await fetch(dataUrl)).blob();
       const file = new File([blob], `ai-cover-${Date.now()}.png`, { type: blob.type || 'image/png' });
       setCoverImage(file);
@@ -213,6 +283,76 @@ export default function App() {
 
   // ---- Insert inline AI image into markdown ----
   const currentInlineCount = useMemo(() => extractAiImages(markdown).length, [markdown]);
+
+  const preflightItems = useMemo<PreflightItem[]>(() => {
+    const items: PreflightItem[] = [];
+    const hasCredentials = Boolean(appId.trim() && appSecret.trim());
+
+    if (hasCredentials) {
+      items.push({ level: 'ok', text: '公众号 AppID / AppSecret 已填写' });
+    } else {
+      items.push({ level: 'error', text: '请先在设置里填写公众号 AppID 和 AppSecret' });
+    }
+
+    if (title.trim()) {
+      items.push({ level: 'ok', text: '标题已填写' });
+    } else {
+      items.push({ level: 'error', text: draftType === 'newspic' ? '请填写贴图标题' : '请填写文章标题' });
+    }
+
+    if (draftType === 'news') {
+      if (!coverImage) {
+        items.push({ level: 'error', text: '普通文章必须上传封面图' });
+      } else {
+        const supportedType = /^image\/(bmp|png|jpe?g|gif)$/i.test(coverImage.type) || /\.(bmp|png|jpe?g|gif)$/i.test(coverImage.name);
+        if (!supportedType) {
+          items.push({ level: 'warning', text: `封面格式可能不被微信接受：${coverImage.type || coverImage.name}` });
+        }
+        if (coverImage.size > MAX_COVER_BYTES) {
+          items.push({ level: 'error', text: `封面图 ${formatFileSize(coverImage.size)}，超过微信 2MB 限制` });
+        } else {
+          items.push({ level: 'ok', text: `封面大小 ${formatFileSize(coverImage.size)}，符合 2MB 限制` });
+        }
+        if (coverMeta) {
+          const ratio = coverMeta.width / coverMeta.height;
+          const ratioDelta = Math.abs(ratio - RECOMMENDED_COVER_RATIO) / RECOMMENDED_COVER_RATIO;
+          if (ratioDelta > 0.18) {
+            items.push({ level: 'warning', text: `封面比例 ${coverMeta.width} x ${coverMeta.height}，建议接近 900 x 383` });
+          } else {
+            items.push({ level: 'ok', text: `封面比例 ${coverMeta.width} x ${coverMeta.height}，接近推荐比例` });
+          }
+        }
+      }
+
+      if (currentInlineCount > MAX_INLINE_IMAGES) {
+        items.push({ level: 'error', text: `正文 AI 插图 ${currentInlineCount} 张，超过 ${MAX_INLINE_IMAGES} 张上限` });
+      } else if (currentInlineCount > 0) {
+        items.push({ level: 'ok', text: `正文 AI 插图 ${currentInlineCount}/${MAX_INLINE_IMAGES}，推送时会自动生成并上传` });
+      } else {
+        items.push({ level: 'ok', text: '正文没有 AI 插图占位，可直接推送' });
+      }
+    } else {
+      if (picImages.length === 0) {
+        items.push({ level: 'error', text: '贴图草稿至少需要 1 张图片' });
+      } else if (picImages.length > MAX_PIC_IMAGES) {
+        items.push({ level: 'error', text: `贴图图片 ${picImages.length} 张，超过 ${MAX_PIC_IMAGES} 张上限` });
+      } else {
+        items.push({ level: 'ok', text: `贴图图片 ${picImages.length}/${MAX_PIC_IMAGES} 张` });
+      }
+
+      const oversized = picImages.filter((file) => file.size > MAX_COVER_BYTES);
+      if (oversized.length > 0) {
+        items.push({ level: 'warning', text: `${oversized.length} 张贴图超过 2MB，可能被微信素材接口拒绝` });
+      }
+    }
+
+    return items;
+  }, [appId, appSecret, title, draftType, coverImage, coverMeta, currentInlineCount, picImages]);
+
+  const blockingPreflightItems = useMemo(
+    () => preflightItems.filter((item) => item.level === 'error'),
+    [preflightItems]
+  );
 
   const handleInsertInlineImage = () => {
     if (currentInlineCount >= MAX_INLINE_IMAGES) {
@@ -263,6 +403,11 @@ export default function App() {
 
   // ---- Push to draft box ----
   const handlePush = async () => {
+    if (blockingPreflightItems.length > 0) {
+      setPushError(blockingPreflightItems[0].text);
+      return;
+    }
+
     if (!appId || !appSecret) { setPushError('请先配置 AppID 和 AppSecret'); return; }
     if (!title.trim()) { setPushError('请输入标题'); return; }
 
@@ -489,7 +634,10 @@ export default function App() {
         {/* Editor */}
         <div className="w-1/2 flex flex-col border-r border-gray-200 bg-white">
           <div className="px-4 py-2 bg-gray-100 border-b border-gray-200 text-sm font-medium text-gray-600 flex items-center justify-between">
-            <span>Markdown 编辑器</span>
+            <div className="flex items-center gap-2">
+              <span>Markdown 编辑器</span>
+              <span className="text-xs font-normal text-gray-400">已自动保存</span>
+            </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-gray-500">AI 插图 {currentInlineCount}/{MAX_INLINE_IMAGES}</span>
               <button
@@ -694,6 +842,29 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-gray-700">推送前检查</span>
+                  <span className={`text-xs font-medium ${blockingPreflightItems.length > 0 ? 'text-red-600' : 'text-green-700'}`}>
+                    {blockingPreflightItems.length > 0 ? `${blockingPreflightItems.length} 项需处理` : '可以推送'}
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  {preflightItems.map((item, index) => (
+                    <div key={`${item.text}-${index}`} className="flex items-start gap-2 text-xs leading-5">
+                      {item.level === 'ok' ? (
+                        <Check size={14} className="mt-0.5 shrink-0 text-green-600" />
+                      ) : (
+                        <AlertTriangle size={14} className={`mt-0.5 shrink-0 ${item.level === 'error' ? 'text-red-600' : 'text-amber-600'}`} />
+                      )}
+                      <span className={item.level === 'error' ? 'text-red-700' : item.level === 'warning' ? 'text-amber-700' : 'text-gray-600'}>
+                        {item.text}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               {draftType === 'news' && currentInlineCount > 0 && (
                 <div className="p-3 bg-purple-50 border border-purple-200 rounded-md text-sm text-purple-800">
                   📸 正文检测到 <b>{currentInlineCount}</b> 张 AI 插图占位。推送时将自动生成、上传到微信、再替换到文章里。
@@ -765,6 +936,7 @@ export default function App() {
                       <div className="text-xs text-gray-500 flex-1">
                         <p className="text-red-500 font-medium mb-1">微信接口要求必须上传封面图</p>
                         <p>建议尺寸：900 x 383 像素</p>
+                        <p className="mt-1">AI 封面会按接近推荐比例生成</p>
                         <p className="mt-1">支持格式：bmp, png, jpeg, jpg, gif</p>
                         <p className="mt-1">文件大小：不超过 2MB</p>
                       </div>

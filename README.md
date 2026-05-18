@@ -1,20 +1,41 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# 微信公众号排版小助手
 
-# Run and deploy your AI Studio app
+一个用于公众号文章排版、AI 配图、并推送到微信草稿箱的 Web 工具。
 
-This contains everything you need to run your app locally.
+## 主要功能
 
-View your app in AI Studio: https://ai.studio/apps/d81b989a-4c06-4368-ab0e-a368b8ff8365
+- Markdown 编辑与公众号样式实时预览
+- 复制预览内容
+- 普通文章草稿推送到微信公众号草稿箱
+- 贴图草稿 `newspic` 推送，最多 20 张图片
+- AI 生成封面图和正文插图
+- `![](ai://提示词)` 正文插图占位，推送时自动生成并上传到微信
+- 文字草稿自动保存到本地浏览器
+- 推送前检查凭据、标题、封面、插图数量和图片大小
 
-## Run Locally
+## 本地运行
 
-**Prerequisites:**  Node.js
+**前置要求：** Node.js 20+
 
+```bash
+npm install
+cp .env.example .env.local
+npm run dev
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+访问 <http://localhost:3000>。
+
+AI 生图需要在 `.env.local` 中配置：
+
+```bash
+SILICONFLOW_API_KEY="你的硅基流动 API Key"
+```
+
+## 部署
+
+仓库包含 `render.yaml`，可通过 Render Blueprint 部署。生产环境需要配置：
+
+- `SILICONFLOW_API_KEY`
+- `IMAGE_MODEL`，默认 `black-forest-labs/FLUX.1-dev`
+
+微信接口还要求把部署服务的出口 IP 加入微信公众号后台 IP 白名单。
