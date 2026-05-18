@@ -10,6 +10,7 @@ import juice from 'juice';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+const MAX_VOICE_BYTES = 2 * 1024 * 1024;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -60,6 +61,42 @@ app.post('/api/wechat/upload-image', upload.single('image'), async (req, res) =>
     res.json({ mediaId: response.data.media_id, url: response.data.url });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// API: Upload voice/audio to WeChat permanent material library.
+// WeChat treats this as a "voice" material, not as a draft article type.
+app.post('/api/wechat/upload-voice', upload.single('voice'), async (req, res) => {
+  const file = req.file;
+  try {
+    const { appId, appSecret } = req.body;
+    if (!file) throw new Error('No audio provided');
+    const supportedType = /\.(mp3|amr)$/i.test(file.originalname) || /audio\/(mpeg|mp3|amr)/i.test(file.mimetype);
+    if (!supportedType) throw new Error('音频素材仅支持 MP3 或 AMR 格式');
+    if (file.size > MAX_VOICE_BYTES) throw new Error('音频文件超过微信 2MB 限制');
+
+    const token = await getAccessToken(appId, appSecret);
+
+    const form = new FormData();
+    form.append('media', fs.createReadStream(file.path), file.originalname);
+
+    const url = `https://api.weixin.qq.com/cgi-bin/material/add_material?access_token=${token}&type=voice`;
+    const response = await axios.post(url, form, {
+      headers: form.getHeaders(),
+      timeout: 30000,
+    });
+
+    if (response.data.errcode) {
+      throw new Error(`上传音频素材失败: ${response.data.errmsg} (错误码: ${response.data.errcode})`);
+    }
+
+    res.json({ mediaId: response.data.media_id, url: response.data.url || '' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (file) {
+      try { fs.unlinkSync(file.path); } catch {}
+    }
   }
 });
 

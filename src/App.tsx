@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles, Plus, AlertTriangle } from 'lucide-react';
+import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles, Plus, AlertTriangle, Mic } from 'lucide-react';
 
 const DEFAULT_MARKDOWN = `## 财帛宫：你天生适合哪种财路
 
@@ -44,16 +44,21 @@ const IMAGE_MODELS: { id: string; label: string; note: string }[] = [
 const MAX_INLINE_IMAGES = 3;
 const MAX_PIC_IMAGES = 20;
 const MAX_COVER_BYTES = 2 * 1024 * 1024;
+const MAX_VOICE_BYTES = 2 * 1024 * 1024;
+const MAX_VOICE_DURATION = 60;
 const RECOMMENDED_COVER_RATIO = 900 / 383;
 const CACHE_KEY = 'ai_image_url_cache_v1';
 const DRAFT_KEY = 'wechat_draft_autosave_v1';
+const VOICE_HISTORY_KEY = 'wechat_voice_material_history_v1';
+
+type DraftType = 'news' | 'newspic' | 'voice';
 
 type DraftSnapshot = {
   markdown: string;
   title: string;
   author: string;
   digest: string;
-  draftType: 'news' | 'newspic';
+  draftType: DraftType;
   picContent: string;
   aiPrompt: string;
 };
@@ -66,6 +71,12 @@ type CoverMeta = {
 type PreflightItem = {
   level: 'ok' | 'warning' | 'error';
   text: string;
+};
+
+type VoiceUploadRecord = {
+  mediaId: string;
+  filename: string;
+  uploadedAt: string;
 };
 
 // Scan markdown for ai://prompt placeholders
@@ -104,6 +115,26 @@ function formatFileSize(size: number) {
   return `${Math.max(1, Math.round(size / 1024))}KB`;
 }
 
+function formatDuration(seconds: number | null) {
+  if (seconds === null || Number.isNaN(seconds)) return '未知时长';
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60).toString().padStart(2, '0');
+  return `${minutes}:${rest}`;
+}
+
+function isSupportedVoiceFile(file: File) {
+  return /\.(mp3|amr)$/i.test(file.name) || /audio\/(mpeg|mp3|amr)/i.test(file.type);
+}
+
+function loadVoiceHistory(): VoiceUploadRecord[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(VOICE_HISTORY_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.slice(0, 5) : [];
+  } catch {
+    return [];
+  }
+}
+
 export default function App() {
   const savedDraftRef = useRef<Partial<DraftSnapshot>>(loadDraftSnapshot());
   const [markdown, setMarkdown] = useState(savedDraftRef.current.markdown || DEFAULT_MARKDOWN);
@@ -123,9 +154,15 @@ export default function App() {
   const [coverImage, setCoverImage] = useState<File | null>(null);
   const [coverMeta, setCoverMeta] = useState<CoverMeta | null>(null);
   const [uploadedMediaId, setUploadedMediaId] = useState<string>('');
-  const [draftType, setDraftType] = useState<'news' | 'newspic'>(savedDraftRef.current.draftType || 'news');
+  const [draftType, setDraftType] = useState<DraftType>(savedDraftRef.current.draftType || 'news');
   const [picContent, setPicContent] = useState(savedDraftRef.current.picContent || '');
   const [picImages, setPicImages] = useState<File[]>([]);
+  const [voiceFile, setVoiceFile] = useState<File | null>(null);
+  const [voiceDuration, setVoiceDuration] = useState<number | null>(null);
+  const [voicePreviewUrl, setVoicePreviewUrl] = useState('');
+  const [voiceMediaId, setVoiceMediaId] = useState('');
+  const [voiceHistory, setVoiceHistory] = useState<VoiceUploadRecord[]>(loadVoiceHistory);
+  const [voiceCopied, setVoiceCopied] = useState(false);
 
   const [isPushing, setIsPushing] = useState(false);
   const [pushStatus, setPushStatus] = useState(''); // progress text
@@ -189,6 +226,29 @@ export default function App() {
     };
     img.src = url;
   }, [coverImage]);
+
+  useEffect(() => {
+    if (!voiceFile) {
+      setVoiceDuration(null);
+      setVoicePreviewUrl('');
+      return;
+    }
+
+    const url = URL.createObjectURL(voiceFile);
+    setVoicePreviewUrl(url);
+    const audio = new Audio(url);
+    audio.onloadedmetadata = () => {
+      setVoiceDuration(audio.duration);
+    };
+    audio.onerror = () => {
+      setVoiceDuration(null);
+    };
+    return () => URL.revokeObjectURL(url);
+  }, [voiceFile]);
+
+  useEffect(() => {
+    try { localStorage.setItem(VOICE_HISTORY_KEY, JSON.stringify(voiceHistory)); } catch {}
+  }, [voiceHistory]);
 
   const saveSettings = () => {
     localStorage.setItem('wechat_appid', appId);
@@ -259,6 +319,25 @@ export default function App() {
     return uploadData.mediaId;
   };
 
+  const uploadVoiceMaterial = async (voice: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('appId', appId);
+    formData.append('appSecret', appSecret);
+    formData.append('voice', voice);
+    const uploadRes = await fetch('/api/wechat/upload-voice', { method: 'POST', body: formData });
+    const ct = uploadRes.headers.get('content-type') || '';
+    let uploadData: any;
+    if (ct.includes('application/json')) {
+      uploadData = await uploadRes.json();
+    } else {
+      const t = await uploadRes.text();
+      if (t.includes('Please wait') || t.includes('正在启动')) throw new Error('服务器正在重启或唤醒中，请等待几秒钟后再试。');
+      throw new Error(`上传音频素材失败: HTTP ${uploadRes.status}`);
+    }
+    if (!uploadRes.ok) throw new Error(uploadData.error || '上传音频素材失败');
+    return uploadData.mediaId;
+  };
+
   // ---- AI cover image ----
   const handleGenerateCover = async () => {
     const promptText = aiPrompt.trim() || title;
@@ -294,13 +373,13 @@ export default function App() {
       items.push({ level: 'error', text: '请先在设置里填写公众号 AppID 和 AppSecret' });
     }
 
-    if (title.trim()) {
-      items.push({ level: 'ok', text: '标题已填写' });
-    } else {
-      items.push({ level: 'error', text: draftType === 'newspic' ? '请填写贴图标题' : '请填写文章标题' });
-    }
-
     if (draftType === 'news') {
+      if (title.trim()) {
+        items.push({ level: 'ok', text: '文章标题已填写' });
+      } else {
+        items.push({ level: 'error', text: '请填写文章标题' });
+      }
+
       if (!coverImage) {
         items.push({ level: 'error', text: '普通文章必须上传封面图' });
       } else {
@@ -331,7 +410,13 @@ export default function App() {
       } else {
         items.push({ level: 'ok', text: '正文没有 AI 插图占位，可直接推送' });
       }
-    } else {
+    } else if (draftType === 'newspic') {
+      if (title.trim()) {
+        items.push({ level: 'ok', text: '贴图标题已填写' });
+      } else {
+        items.push({ level: 'error', text: '请填写贴图标题' });
+      }
+
       if (picImages.length === 0) {
         items.push({ level: 'error', text: '贴图草稿至少需要 1 张图片' });
       } else if (picImages.length > MAX_PIC_IMAGES) {
@@ -344,10 +429,36 @@ export default function App() {
       if (oversized.length > 0) {
         items.push({ level: 'warning', text: `${oversized.length} 张贴图超过 2MB，可能被微信素材接口拒绝` });
       }
+    } else {
+      if (!voiceFile) {
+        items.push({ level: 'error', text: '请选择要上传的音频文件' });
+      } else {
+        if (isSupportedVoiceFile(voiceFile)) {
+          items.push({ level: 'ok', text: '音频格式为 MP3/AMR' });
+        } else {
+          items.push({ level: 'error', text: '音频素材仅支持 MP3 或 AMR 格式' });
+        }
+
+        if (voiceFile.size > MAX_VOICE_BYTES) {
+          items.push({ level: 'error', text: `音频文件 ${formatFileSize(voiceFile.size)}，超过微信 2MB 限制` });
+        } else {
+          items.push({ level: 'ok', text: `音频大小 ${formatFileSize(voiceFile.size)}，符合 2MB 限制` });
+        }
+
+        if (voiceDuration !== null) {
+          if (voiceDuration > MAX_VOICE_DURATION) {
+            items.push({ level: 'error', text: `音频时长 ${formatDuration(voiceDuration)}，超过微信 60 秒限制` });
+          } else {
+            items.push({ level: 'ok', text: `音频时长 ${formatDuration(voiceDuration)}，符合 60 秒限制` });
+          }
+        } else {
+          items.push({ level: 'warning', text: '暂未读取到音频时长，请确认不超过 60 秒' });
+        }
+      }
     }
 
     return items;
-  }, [appId, appSecret, title, draftType, coverImage, coverMeta, currentInlineCount, picImages]);
+  }, [appId, appSecret, title, draftType, coverImage, coverMeta, currentInlineCount, picImages, voiceFile, voiceDuration]);
 
   const blockingPreflightItems = useMemo(
     () => preflightItems.filter((item) => item.level === 'error'),
@@ -409,7 +520,34 @@ export default function App() {
     }
 
     if (!appId || !appSecret) { setPushError('请先配置 AppID 和 AppSecret'); return; }
-    if (!title.trim()) { setPushError('请输入标题'); return; }
+    if (draftType !== 'voice' && !title.trim()) { setPushError('请输入标题'); return; }
+
+    if (draftType === 'voice') {
+      if (!voiceFile) { setPushError('请选择要上传的音频文件'); return; }
+
+      setIsPushing(true);
+      setPushError('');
+      setPushSuccess(false);
+      setVoiceMediaId('');
+
+      try {
+        setPushStatus('上传音频素材到微信...');
+        const mediaId = await uploadVoiceMaterial(voiceFile);
+        setVoiceMediaId(mediaId);
+        setVoiceHistory((records) => [
+          { mediaId, filename: voiceFile.name, uploadedAt: new Date().toISOString() },
+          ...records.filter((record) => record.mediaId !== mediaId),
+        ].slice(0, 5));
+        setPushSuccess(true);
+        setPushStatus('');
+      } catch (err: any) {
+        setPushError(err.message);
+        setPushStatus('');
+      } finally {
+        setIsPushing(false);
+      }
+      return;
+    }
 
     if (draftType === 'newspic') {
       if (picImages.length === 0) { setPushError('请至少上传 1 张贴图图片'); return; }
@@ -579,6 +717,13 @@ export default function App() {
     }
   };
 
+  const handleCopyVoiceMediaId = async (mediaId = voiceMediaId) => {
+    if (!mediaId) return;
+    await navigator.clipboard.writeText(mediaId);
+    setVoiceCopied(true);
+    setTimeout(() => setVoiceCopied(false), 2000);
+  };
+
   // Custom image renderer: ai:// -> styled placeholder
   const imgRenderer = (props: any) => {
     const src = props.src || '';
@@ -624,7 +769,7 @@ export default function App() {
             className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-md hover:bg-green-700 transition-colors"
           >
             <Send size={16} />
-            推送到草稿箱
+            推送/上传
           </button>
         </div>
       </header>
@@ -796,7 +941,7 @@ export default function App() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl w-[560px] overflow-hidden flex flex-col max-h-[90vh]">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center shrink-0">
-              <h2 className="text-lg font-semibold text-gray-800">推送到草稿箱</h2>
+              <h2 className="text-lg font-semibold text-gray-800">推送与素材上传</h2>
               <button onClick={() => setShowPushModal(false)} className="text-gray-500 hover:text-gray-700">
                 <X size={20} />
               </button>
@@ -808,8 +953,18 @@ export default function App() {
                   <div className="p-3 bg-red-50 text-red-700 text-sm rounded-md border border-red-200 break-words">{pushError}</div>
                 )}
                 {pushSuccess && (
-                  <div className="p-3 bg-green-50 text-green-700 text-sm rounded-md border border-green-200 flex items-center gap-2">
-                    <Check size={16} /> 推送成功！请前往微信公众平台草稿箱查看。
+                  <div className="p-3 bg-green-50 text-green-700 text-sm rounded-md border border-green-200 flex items-center gap-2 flex-wrap">
+                    <Check size={16} />
+                    {draftType === 'voice' ? '音频素材上传成功，media_id 已生成。' : '推送成功！请前往微信公众平台草稿箱查看。'}
+                    {draftType === 'voice' && voiceMediaId && (
+                      <button
+                        type="button"
+                        onClick={() => handleCopyVoiceMediaId()}
+                        className="ml-auto px-2 py-1 text-xs font-medium text-green-700 bg-white border border-green-200 rounded hover:bg-green-50"
+                      >
+                        {voiceCopied ? '已复制' : '复制 media_id'}
+                      </button>
+                    )}
                   </div>
                 )}
                 {pushStatus && !pushSuccess && !pushError && (
@@ -824,7 +979,7 @@ export default function App() {
             <div className="p-6 space-y-4 overflow-y-auto flex-1">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">草稿类型</label>
-                <div className="grid grid-cols-2 gap-2 rounded-md bg-gray-100 p-1">
+                <div className="grid grid-cols-3 gap-2 rounded-md bg-gray-100 p-1">
                   <button
                     type="button"
                     onClick={() => setDraftType('news')}
@@ -838,6 +993,13 @@ export default function App() {
                     className={`px-3 py-2 text-sm font-medium rounded transition-colors ${draftType === 'newspic' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
                   >
                     贴图
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDraftType('voice')}
+                    className={`px-3 py-2 text-sm font-medium rounded transition-colors ${draftType === 'voice' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
+                  >
+                    音频素材
                   </button>
                 </div>
               </div>
@@ -871,12 +1033,14 @@ export default function App() {
                 </div>
               )}
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">{draftType === 'newspic' ? '贴图标题' : '文章标题'} <span className="text-red-500">*</span></label>
-                <input type="text" value={title} onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder={draftType === 'newspic' ? '请输入贴图标题' : '请输入文章标题'} />
-              </div>
+              {draftType !== 'voice' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{draftType === 'newspic' ? '贴图标题' : '文章标题'} <span className="text-red-500">*</span></label>
+                  <input type="text" value={title} onChange={(e) => setTitle(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder={draftType === 'newspic' ? '请输入贴图标题' : '请输入文章标题'} />
+                </div>
+              )}
 
               {draftType === 'news' ? (
                 <>
@@ -943,7 +1107,7 @@ export default function App() {
                     </div>
                   </div>
                 </>
-              ) : (
+              ) : draftType === 'newspic' ? (
                 <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">贴图说明</label>
@@ -991,6 +1155,94 @@ export default function App() {
                     </p>
                   </div>
                 </>
+              ) : (
+                <>
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-md text-sm text-blue-800">
+                    音频会上传为微信永久语音素材，不会进入草稿箱。上传成功后请复制 media_id，用于自动回复、客服消息或后续接口调用。
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">音频文件 <span className="text-red-500">*</span></label>
+                    <label className="flex items-center justify-center w-full h-28 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50">
+                      <div className="flex flex-col items-center text-gray-400">
+                        <Mic size={24} className="mb-2" />
+                        <span className="text-sm">点击选择 MP3/AMR 音频</span>
+                        <span className="text-xs mt-1">不超过 2MB，时长不超过 60 秒</span>
+                      </div>
+                      <input type="file" accept=".mp3,.amr,audio/mpeg,audio/mp3,audio/amr" className="hidden"
+                        onChange={(e) => {
+                          if (e.target.files && e.target.files[0]) {
+                            setVoiceFile(e.target.files[0]);
+                            setVoiceMediaId('');
+                            setPushError('');
+                          }
+                        }} />
+                    </label>
+                    {voiceFile && (
+                      <div className="mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-medium truncate">{voiceFile.name}</p>
+                            <p className="text-xs text-gray-500 mt-1">
+                              {formatFileSize(voiceFile.size)} · {formatDuration(voiceDuration)}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setVoiceFile(null);
+                              setVoiceMediaId('');
+                            }}
+                            className="text-gray-500 hover:text-gray-700 shrink-0"
+                            aria-label="移除音频文件"
+                          >
+                            <X size={18} />
+                          </button>
+                        </div>
+                        {voicePreviewUrl && <audio src={voicePreviewUrl} controls className="mt-3 w-full" />}
+                      </div>
+                    )}
+                  </div>
+
+                  {voiceMediaId && (
+                    <div className="rounded-md border border-green-200 bg-green-50 p-3">
+                      <label className="block text-xs font-medium text-green-800 mb-1">media_id</label>
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 break-all rounded bg-white px-2 py-1 text-xs text-green-900 border border-green-100">{voiceMediaId}</code>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyVoiceMediaId()}
+                          className="px-2 py-1 text-xs font-medium text-green-700 bg-white border border-green-200 rounded hover:bg-green-50 shrink-0"
+                        >
+                          {voiceCopied ? '已复制' : '复制'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {voiceHistory.length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-medium text-gray-700 mb-2">最近上传</h3>
+                      <div className="space-y-2">
+                        {voiceHistory.map((record) => (
+                          <div key={record.mediaId} className="rounded-md border border-gray-200 bg-white p-2 text-xs text-gray-600">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-medium text-gray-700 truncate">{record.filename}</span>
+                              <button
+                                type="button"
+                                onClick={() => handleCopyVoiceMediaId(record.mediaId)}
+                                className="text-green-700 hover:text-green-800 shrink-0"
+                              >
+                                复制
+                              </button>
+                            </div>
+                            <code className="mt-1 block break-all text-gray-500">{record.mediaId}</code>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </div>
             <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3 shrink-0">
@@ -1002,7 +1254,7 @@ export default function App() {
                 {isPushing ? (
                   <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>推送中...</>
                 ) : (
-                  '确认推送'
+                  draftType === 'voice' ? '确认上传' : '确认推送'
                 )}
               </button>
             </div>
