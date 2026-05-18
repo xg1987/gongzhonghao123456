@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles, Plus, AlertTriangle, Mic } from 'lucide-react';
+import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles, Plus, AlertTriangle, Mic, Monitor, Moon, Sun } from 'lucide-react';
 
 const DEFAULT_MARKDOWN = `## 财帛宫：你天生适合哪种财路
 
@@ -50,8 +50,11 @@ const RECOMMENDED_COVER_RATIO = 900 / 383;
 const CACHE_KEY = 'ai_image_url_cache_v1';
 const DRAFT_KEY = 'wechat_draft_autosave_v1';
 const VOICE_HISTORY_KEY = 'wechat_voice_material_history_v1';
+const THEME_KEY = 'wechat_theme_mode_v1';
 
 type DraftType = 'news' | 'newspic' | 'voice';
+type ThemeMode = 'auto' | 'light' | 'dark';
+type ResolvedTheme = 'light' | 'dark';
 
 type DraftSnapshot = {
   markdown: string;
@@ -78,6 +81,21 @@ type VoiceUploadRecord = {
   filename: string;
   uploadedAt: string;
 };
+
+function getInitialThemeMode(): ThemeMode {
+  if (typeof window === 'undefined') return 'auto';
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    return saved === 'light' || saved === 'dark' || saved === 'auto' ? saved : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+function getSystemTheme(): ResolvedTheme {
+  if (typeof window === 'undefined' || !window.matchMedia) return 'light';
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
 
 // Scan markdown for ai://prompt placeholders
 function extractAiImages(md: string): { full: string; prompt: string }[] {
@@ -141,6 +159,8 @@ export default function App() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [showPushModal, setShowPushModal] = useState(false);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode);
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(getSystemTheme);
 
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
@@ -181,6 +201,12 @@ export default function App() {
   // Insert-inline-image mini dialog state
   const [showInsertDialog, setShowInsertDialog] = useState(false);
   const [insertPrompt, setInsertPrompt] = useState('');
+  const resolvedTheme: ResolvedTheme = themeMode === 'auto' ? systemTheme : themeMode;
+  const themeOptions: { mode: ThemeMode; label: string; icon: React.ReactNode }[] = [
+    { mode: 'auto', label: '跟随系统', icon: <Monitor size={16} /> },
+    { mode: 'light', label: '白天模式', icon: <Sun size={16} /> },
+    { mode: 'dark', label: '黑夜模式', icon: <Moon size={16} /> },
+  ];
 
   useEffect(() => {
     const savedAppId = localStorage.getItem('wechat_appid');
@@ -194,6 +220,28 @@ export default function App() {
     if (savedStyle && STYLE_PRESETS[savedStyle]) setStylePreset(savedStyle as keyof typeof STYLE_PRESETS);
     if (savedCustom) setCustomStyle(savedCustom);
   }, []);
+
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const syncSystemTheme = () => setSystemTheme(mediaQuery.matches ? 'dark' : 'light');
+    syncSystemTheme();
+
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', syncSystemTheme);
+      return () => mediaQuery.removeEventListener('change', syncSystemTheme);
+    }
+
+    mediaQuery.addListener(syncSystemTheme);
+    return () => mediaQuery.removeListener(syncSystemTheme);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolvedTheme;
+    document.documentElement.dataset.themeMode = themeMode;
+    document.documentElement.style.colorScheme = resolvedTheme;
+    try { localStorage.setItem(THEME_KEY, themeMode); } catch {}
+  }, [themeMode, resolvedTheme]);
 
   useEffect(() => {
     const snapshot: DraftSnapshot = {
@@ -743,13 +791,28 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
+    <div className="app-shell min-h-screen flex flex-col bg-gray-50">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shrink-0">
+      <header className="app-header bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shrink-0">
         <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2">
           <span className="text-green-600">WeChat</span> 排版助手
         </h1>
         <div className="flex items-center gap-3">
+          <div className="theme-switcher" aria-label="主题模式">
+            {themeOptions.map((option) => (
+              <button
+                key={option.mode}
+                type="button"
+                onClick={() => setThemeMode(option.mode)}
+                className={`theme-switcher-button ${themeMode === option.mode ? 'active' : ''}`}
+                title={option.label}
+                aria-label={option.label}
+                aria-pressed={themeMode === option.mode}
+              >
+                {option.icon}
+              </button>
+            ))}
+          </div>
           <button
             onClick={handleCopy}
             className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
@@ -777,8 +840,8 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 flex overflow-hidden">
         {/* Editor */}
-        <div className="w-1/2 flex flex-col border-r border-gray-200 bg-white">
-          <div className="px-4 py-2 bg-gray-100 border-b border-gray-200 text-sm font-medium text-gray-600 flex items-center justify-between">
+        <div className="editor-panel w-1/2 flex flex-col border-r border-gray-200 bg-white">
+          <div className="panel-toolbar px-4 py-2 bg-gray-100 border-b border-gray-200 text-sm font-medium text-gray-600 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span>Markdown 编辑器</span>
               <span className="text-xs font-normal text-gray-400">已自动保存</span>
@@ -797,20 +860,20 @@ export default function App() {
             ref={editorRef}
             value={markdown}
             onChange={(e) => setMarkdown(e.target.value)}
-            className="flex-1 w-full p-6 resize-none focus:outline-none text-gray-800 font-mono text-sm leading-relaxed"
+            className="editor-textarea flex-1 w-full p-6 resize-none focus:outline-none text-gray-800 font-mono text-sm leading-relaxed"
             placeholder="在此输入 Markdown 内容..."
           />
         </div>
 
         {/* Preview */}
-        <div className="w-1/2 flex flex-col bg-gray-50">
-          <div className="px-4 py-2 bg-gray-100 border-b border-gray-200 text-sm font-medium text-gray-600">
+        <div className="preview-panel w-1/2 flex flex-col bg-gray-50">
+          <div className="panel-toolbar px-4 py-2 bg-gray-100 border-b border-gray-200 text-sm font-medium text-gray-600">
             公众号预览
           </div>
           <div className="flex-1 overflow-y-auto p-8 flex justify-center">
             <div
               ref={previewRef}
-              className="w-full max-w-[375px] bg-[#f7f8fa] min-h-[667px] shadow-sm border border-gray-200 p-4 rounded-sm"
+              className="preview-frame w-full max-w-[375px] bg-[#f7f8fa] min-h-[667px] shadow-sm border border-gray-200 p-4 rounded-sm"
             >
               <div className="wechat-preview">
                 <Markdown

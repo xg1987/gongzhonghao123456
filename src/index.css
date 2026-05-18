@@ -1,5 +1,249 @@
 @import "tailwindcss";
 
+:root {
+  --app-bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-muted: #f3f4f6;
+  --surface-soft: #f9fafb;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --text: #1f2937;
+  --text-strong: #111827;
+  --muted: #6b7280;
+  --muted-soft: #9ca3af;
+  --field: #ffffff;
+  --field-text: #111827;
+  --preview-shell: #f7f8fa;
+  --shadow: 0 1px 2px rgb(15 23 42 / 0.08);
+  --shadow-modal: 0 20px 45px rgb(15 23 42 / 0.16);
+}
+
+:root[data-theme="dark"] {
+  --app-bg: #0b1220;
+  --surface: #111827;
+  --surface-muted: #172033;
+  --surface-soft: #101827;
+  --border: #263449;
+  --border-strong: #334155;
+  --text: #e5e7eb;
+  --text-strong: #f8fafc;
+  --muted: #94a3b8;
+  --muted-soft: #64748b;
+  --field: #0f172a;
+  --field-text: #e5e7eb;
+  --preview-shell: #151f2f;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.36);
+  --shadow-modal: 0 24px 60px rgb(0 0 0 / 0.48);
+}
+
+html {
+  background: var(--app-bg);
+}
+
+body {
+  background: var(--app-bg);
+  color: var(--text);
+}
+
+.app-shell {
+  background: var(--app-bg) !important;
+  color: var(--text);
+}
+
+.app-header,
+.editor-panel {
+  background: var(--surface) !important;
+  border-color: var(--border) !important;
+  color: var(--text);
+}
+
+.panel-toolbar {
+  background: var(--surface-muted) !important;
+  border-color: var(--border) !important;
+  color: var(--muted) !important;
+}
+
+.editor-textarea {
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  caret-color: #22c55e;
+}
+
+.editor-textarea::placeholder {
+  color: var(--muted-soft);
+}
+
+.preview-panel {
+  background: var(--app-bg) !important;
+}
+
+.preview-frame {
+  background: var(--preview-shell) !important;
+  border-color: var(--border) !important;
+  box-shadow: var(--shadow);
+}
+
+.theme-switcher {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.theme-switcher-button {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--muted);
+  transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.theme-switcher-button:hover {
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+.theme-switcher-button.active {
+  color: #16a34a;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+:root[data-theme="dark"] .bg-white {
+  background-color: var(--surface) !important;
+}
+
+:root[data-theme="dark"] .bg-gray-50,
+:root[data-theme="dark"] .bg-gray-100 {
+  background-color: var(--surface-muted) !important;
+}
+
+:root[data-theme="dark"] .hover\:bg-gray-50:hover,
+:root[data-theme="dark"] .hover\:bg-gray-100:hover {
+  background-color: #1d2940 !important;
+}
+
+:root[data-theme="dark"] .border-gray-100,
+:root[data-theme="dark"] .border-gray-200,
+:root[data-theme="dark"] .border-gray-300 {
+  border-color: var(--border) !important;
+}
+
+:root[data-theme="dark"] .text-gray-800,
+:root[data-theme="dark"] .text-gray-700 {
+  color: var(--text) !important;
+}
+
+:root[data-theme="dark"] .text-gray-600,
+:root[data-theme="dark"] .text-gray-500,
+:root[data-theme="dark"] .text-gray-400 {
+  color: var(--muted) !important;
+}
+
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea {
+  background-color: var(--field) !important;
+  border-color: var(--border-strong) !important;
+  color: var(--field-text) !important;
+}
+
+:root[data-theme="dark"] input::placeholder,
+:root[data-theme="dark"] textarea::placeholder {
+  color: var(--muted-soft) !important;
+}
+
+:root[data-theme="dark"] code {
+  background-color: #1e293b !important;
+  color: #dbeafe !important;
+}
+
+:root[data-theme="dark"] .shadow-xl {
+  box-shadow: var(--shadow-modal) !important;
+}
+
+:root[data-theme="dark"] .bg-red-50 {
+  background-color: #3b1116 !important;
+}
+
+:root[data-theme="dark"] .bg-green-50 {
+  background-color: #0b2b1a !important;
+}
+
+:root[data-theme="dark"] .bg-blue-50 {
+  background-color: #0d2545 !important;
+}
+
+:root[data-theme="dark"] .bg-purple-50 {
+  background-color: #281a3f !important;
+}
+
+:root[data-theme="dark"] .bg-purple-100 {
+  background-color: #332052 !important;
+}
+
+:root[data-theme="dark"] .from-purple-50 {
+  --tw-gradient-from: #281a3f !important;
+  --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+}
+
+:root[data-theme="dark"] .to-pink-50 {
+  --tw-gradient-to: #3b1731 !important;
+}
+
+:root[data-theme="dark"] .text-red-700 {
+  color: #fca5a5 !important;
+}
+
+:root[data-theme="dark"] .text-green-700,
+:root[data-theme="dark"] .text-green-800 {
+  color: #86efac !important;
+}
+
+:root[data-theme="dark"] .text-blue-700,
+:root[data-theme="dark"] .text-blue-800 {
+  color: #93c5fd !important;
+}
+
+:root[data-theme="dark"] .text-purple-700,
+:root[data-theme="dark"] .text-purple-800,
+:root[data-theme="dark"] .text-purple-600 {
+  color: #d8b4fe !important;
+}
+
+:root[data-theme="dark"] .text-amber-700,
+:root[data-theme="dark"] .text-amber-600 {
+  color: #fcd34d !important;
+}
+
+:root[data-theme="dark"] .border-red-200 {
+  border-color: #7f1d1d !important;
+}
+
+:root[data-theme="dark"] .border-green-200,
+:root[data-theme="dark"] .border-green-100 {
+  border-color: #166534 !important;
+}
+
+:root[data-theme="dark"] .border-blue-200 {
+  border-color: #1d4ed8 !important;
+}
+
+:root[data-theme="dark"] .border-purple-200,
+:root[data-theme="dark"] .border-purple-300 {
+  border-color: #6b21a8 !important;
+}
+
+:root[data-theme="dark"] .border-dashed {
+  border-color: var(--border-strong) !important;
+}
+
 .wechat-preview {
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", STHeiti, "Microsoft Yahei", Tahoma, Simsun, sans-serif;
   line-height: 1.8;
@@ -8,6 +252,11 @@
   letter-spacing: 0.5px;
   background-color: #fff;
   padding: 16px;
+}
+
+:root[data-theme="dark"] .wechat-preview {
+  background-color: #fff !important;
+  color: #3f3f3f !important;
 }
 
 .wechat-preview section, .wechat-preview div, .wechat-preview p {
