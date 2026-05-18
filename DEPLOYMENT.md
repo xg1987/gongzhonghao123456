@@ -1,6 +1,6 @@
 # 部署指南（Render 免费版 + 硅基流动生图）
 
-> 更新：默认生图模型为 **FLUX.1 dev**（顶级画质）。正文支持最多 3 张 AI 插图占位 `![](ai://提示词)`，推送时自动生成并上传到微信。现已支持访问密码登录和音频永久语音素材上传。
+> 更新：默认生图模型为 **FLUX.1 dev**（顶级画质）。正文支持最多 3 张 AI 插图占位 `![](ai://提示词)`，推送时自动生成并上传到微信。现已支持上传音频为微信永久语音素材。
 
 ## 一、本次更新了什么
 
@@ -11,7 +11,6 @@
 5. `PORT` 从环境变量读取（Render 会自动注入）
 6. 新增本地草稿自动保存和推送前检查，提前提示缺少凭据、封面过大、插图超限等问题
 7. 新增音频素材上传：支持 MP3/AMR，上传成功后返回 `media_id`
-8. 新增登录保护：未登录时只显示登录页，业务 API 需要登录 Cookie
 
 ---
 
@@ -30,10 +29,7 @@
 3. 右上角 **New +** → **Blueprint**
 4. 选择仓库 `xg1987/gongzhonghao123456`，分支选 `main`
 5. Render 会自动读取 `render.yaml`，点 **Apply**
-6. 在 **Environment** 标签页配置：
-   - `SILICONFLOW_API_KEY`：刚才的硅基流动 API Key
-   - `APP_PASSWORD`：进入工具的访问密码
-   - `AUTH_SECRET`：登录 Cookie 签名密钥，建议用随机长字符串
+6. 在 **Environment** 标签页 → 把刚才的硅基流动 API Key 填到 `SILICONFLOW_API_KEY`
 7. 等 3~5 分钟构建完成。域名形如 `https://gongzhonghao-wechat-xxxx.onrender.com`
 
 ### Step 3：把 Render 出口 IP 加入微信白名单
@@ -49,12 +45,11 @@
 ### Step 4：试用
 
 1. 打开 Render 给你的域名
-2. 输入 `APP_PASSWORD` 登录
-3. 点右上角 **设置** → 输入你的公众号 AppID / AppSecret → 保存
-4. 编辑 Markdown → 点 **推送/上传** → 填标题
-5. 想用 AI 生图：在紫色面板填描述（或留空用标题自动生成）→ 点"生成封面图" → 等 15~30 秒；AI 封面会按横版比例生成
-6. 点"确认推送" → 去公众号后台草稿箱看
-7. 如需上传音频，草稿类型选择「音频素材」，选择 MP3/AMR 后点"确认上传"，复制返回的 `media_id`
+2. 点右上角 **设置** → 输入你的公众号 AppID / AppSecret → 保存
+3. 编辑 Markdown → 点 **推送到草稿箱** → 填标题
+4. 想用 AI 生图：在紫色面板填描述（或留空用标题自动生成）→ 点"生成封面图" → 等 15~30 秒；AI 封面会按横版比例生成
+5. 点"确认推送" → 去公众号后台草稿箱看
+6. 如需上传音频，草稿类型选择「音频素材」，选择 MP3/AMR 后点"确认上传"，复制返回的 `media_id`
 
 ---
 
@@ -90,9 +85,6 @@ A：回 Render Connect 标签，复制所有 Outbound IP 到微信白名单。
 
 **Q：AI 生成按钮点了没反应 / 报 "未配置 SILICONFLOW_API_KEY"？**
 A：去 Render Dashboard → 服务 → Environment → 检查 `SILICONFLOW_API_KEY` 是否填了值，改完要 **Manual Deploy** 一次才能生效。
-
-**Q：登录页提示服务器未配置 APP_PASSWORD？**
-A：去 Render Dashboard → 服务 → Environment，新增 `APP_PASSWORD` 并重新部署。建议同时配置 `AUTH_SECRET`。
 
 **Q：生图太慢 / 想换模型？**
 A：默认模型是 `black-forest-labs/FLUX.1-dev`（画质更好）。想更快可以在前端「设置」里切到 `black-forest-labs/FLUX.1-schnell`；想更适合中文语义可以切到 `Kwai-Kolors/Kolors`。

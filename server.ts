@@ -1,140 +1,21 @@
 import express from 'express';
-import type { NextFunction, Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import axios from 'axios';
 import multer from 'multer';
 import FormData from 'form-data';
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
-import dotenv from 'dotenv';
 import { marked } from 'marked';
 import juice from 'juice';
-
-dotenv.config({ path: '.env.local' });
-dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const MAX_VOICE_BYTES = 2 * 1024 * 1024;
-const AUTH_COOKIE = 'wechat_helper_auth';
-const AUTH_TTL_SECONDS = 7 * 24 * 60 * 60;
-const LOCAL_AUTH_SECRET = crypto.randomBytes(32).toString('base64url');
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const upload = multer({ dest: 'uploads/' });
-
-function getAuthSecret() {
-  return process.env.AUTH_SECRET || process.env.APP_PASSWORD || LOCAL_AUTH_SECRET;
-}
-
-function getConfiguredPassword() {
-  return process.env.APP_PASSWORD || '';
-}
-
-function getCookieValue(req: Request, name: string) {
-  const cookieHeader = req.headers.cookie || '';
-  const cookies = cookieHeader.split(';').map((part) => part.trim()).filter(Boolean);
-  for (const cookie of cookies) {
-    const [key, ...valueParts] = cookie.split('=');
-    if (key === name) return decodeURIComponent(valueParts.join('='));
-  }
-  return '';
-}
-
-function signPayload(payload: string) {
-  return crypto.createHmac('sha256', getAuthSecret()).update(payload).digest('base64url');
-}
-
-function createAuthToken() {
-  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + AUTH_TTL_SECONDS * 1000 })).toString('base64url');
-  return `${payload}.${signPayload(payload)}`;
-}
-
-function verifyAuthToken(token: string) {
-  const [payload, signature] = token.split('.');
-  if (!payload || !signature) return false;
-
-  const expectedSignature = signPayload(payload);
-  const signatureBuffer = Buffer.from(signature);
-  const expectedBuffer = Buffer.from(expectedSignature);
-  if (signatureBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) return false;
-
-  try {
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    return typeof data.exp === 'number' && data.exp > Date.now();
-  } catch {
-    return false;
-  }
-}
-
-function authCookieHeader(token: string) {
-  const parts = [
-    `${AUTH_COOKIE}=${encodeURIComponent(token)}`,
-    'HttpOnly',
-    'SameSite=Lax',
-    'Path=/',
-    `Max-Age=${AUTH_TTL_SECONDS}`,
-  ];
-  if (process.env.NODE_ENV === 'production') parts.push('Secure');
-  return parts.join('; ');
-}
-
-function clearAuthCookieHeader() {
-  const parts = [
-    `${AUTH_COOKIE}=`,
-    'HttpOnly',
-    'SameSite=Lax',
-    'Path=/',
-    'Max-Age=0',
-  ];
-  if (process.env.NODE_ENV === 'production') parts.push('Secure');
-  return parts.join('; ');
-}
-
-function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = getCookieValue(req, AUTH_COOKIE);
-  if (!verifyAuthToken(token)) {
-    res.status(401).json({ error: '请先登录' });
-    return;
-  }
-  next();
-}
-
-app.get('/api/auth/status', (req, res) => {
-  const token = getCookieValue(req, AUTH_COOKIE);
-  res.json({ authenticated: verifyAuthToken(token), passwordConfigured: Boolean(getConfiguredPassword()) });
-});
-
-app.post('/api/auth/login', (req, res) => {
-  const configuredPassword = getConfiguredPassword();
-  if (!configuredPassword) {
-    res.status(500).json({ error: '服务器未配置 APP_PASSWORD 环境变量' });
-    return;
-  }
-
-  const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  const passwordBuffer = Buffer.from(password);
-  const expectedBuffer = Buffer.from(configuredPassword);
-  const matches = passwordBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(passwordBuffer, expectedBuffer);
-
-  if (!matches) {
-    res.status(401).json({ error: '访问密码不正确' });
-    return;
-  }
-
-  res.setHeader('Set-Cookie', authCookieHeader(createAuthToken()));
-  res.json({ authenticated: true });
-});
-
-app.post('/api/auth/logout', (_req, res) => {
-  res.setHeader('Set-Cookie', clearAuthCookieHeader());
-  res.json({ authenticated: false });
-});
-
-app.use('/api', requireAuth);
 
 // Helper to get WeChat Access Token
 async function getAccessToken(appId: string, appSecret: string) {
