@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles, Plus, AlertTriangle, Mic, Monitor, Moon, Sun } from 'lucide-react';
+import { Settings, Send, Copy, Check, Image as ImageIcon, X, Sparkles, Plus, AlertTriangle, Mic, Monitor, Moon, Sun, BarChart3 } from 'lucide-react';
 
 const DEFAULT_MARKDOWN = `## 财帛宫：你天生适合哪种财路
 
@@ -81,6 +81,62 @@ type StoryUploadRecord = {
   uploadedAt: string;
 };
 
+type AnalyticsReport = {
+  range: {
+    startDate: string;
+    endDate: string;
+    days: number;
+    generatedAt: string;
+  };
+  totals: {
+    articleCount: number;
+    readUsers: number;
+    readCount: number;
+    shareUsers: number;
+    shareCount: number;
+    collections: number;
+    likes: number;
+    zaikan: number;
+    comments: number;
+    readSubscribeUsers: number;
+    newUsers: number;
+    cancelUsers: number;
+    netUsers: number;
+    latestCumulateUsers: number;
+  };
+  topArticles: Array<{
+    msgid: string;
+    title: string;
+    readUsers: number;
+    readCount: number;
+    shareUsers: number;
+    shareCount: number;
+    collections: number;
+    likes: number;
+    zaikan: number;
+    comments: number;
+    readSubscribeUsers: number;
+    shareRate: number;
+    collectionRate: number;
+    subscribeRate: number;
+    avgFinishRate: number;
+    categories: string[];
+  }>;
+  categoryPerformance: Array<{
+    name: string;
+    articles: number;
+    readUsers: number;
+    avgReadUsers: number;
+    shareUsers: number;
+    collections: number;
+    shareRate: number;
+    collectionRate: number;
+  }>;
+  recommendations: string[];
+  notes: string[];
+  errors: string[];
+};
+
 function normalizeDraftType(value: unknown): DraftType {
   if (value === 'newspic') return 'newspic';
   if (value === 'story' || value === 'voice') return 'story';
@@ -145,6 +201,14 @@ function formatDuration(seconds: number | null) {
   return `${minutes}:${rest}`;
 }
 
+function formatCount(value: number | undefined) {
+  return new Intl.NumberFormat('zh-CN').format(value || 0);
+}
+
+function formatPercent(value: number | undefined) {
+  return `${(((value || 0) * 100)).toFixed(1)}%`;
+}
+
 function isSupportedStoryAudioFile(file: File) {
   return /\.(mp3|m4a|aac|wav|ogg|flac|amr|wma)$/i.test(file.name) || /^audio\//i.test(file.type);
 }
@@ -164,6 +228,7 @@ export default function App() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [showPushModal, setShowPushModal] = useState(false);
+  const [showAnalyticsModal, setShowAnalyticsModal] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode);
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(getSystemTheme);
 
@@ -193,6 +258,10 @@ export default function App() {
   const [pushStatus, setPushStatus] = useState(''); // progress text
   const [pushSuccess, setPushSuccess] = useState(false);
   const [pushError, setPushError] = useState('');
+  const [analyticsDays, setAnalyticsDays] = useState(7);
+  const [analyticsReport, setAnalyticsReport] = useState<AnalyticsReport | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState('');
 
   const [copied, setCopied] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -781,6 +850,32 @@ export default function App() {
     setTimeout(() => setStoryCopied(false), 2000);
   };
 
+  const handleLoadAnalytics = async () => {
+    if (!appId.trim() || !appSecret.trim()) {
+      setAnalyticsError('请先在设置里填写公众号 AppID 和 AppSecret');
+      return;
+    }
+
+    setAnalyticsLoading(true);
+    setAnalyticsError('');
+    try {
+      const resp = await fetch('/api/wechat/analytics/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appId, appSecret, days: analyticsDays }),
+      });
+      const ct = resp.headers.get('content-type') || '';
+      const data = ct.includes('application/json') ? await resp.json() : { error: await resp.text() };
+      if (!resp.ok) throw new Error(data.error || '读取数据分析失败');
+      setAnalyticsReport(data);
+    } catch (err: any) {
+      setAnalyticsError(err.message || '读取数据分析失败');
+      setAnalyticsReport(null);
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
   // Custom image renderer: ai:// -> styled placeholder
   const imgRenderer = (props: any) => {
     const src = props.src || '';
@@ -828,6 +923,16 @@ export default function App() {
           >
             {copied ? <Check size={16} className="text-green-600" /> : <Copy size={16} />}
             {copied ? '已复制' : '复制内容'}
+          </button>
+          <button
+            onClick={() => {
+              setShowAnalyticsModal(true);
+              setAnalyticsError('');
+            }}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+          >
+            <BarChart3 size={16} />
+            数据分析
           </button>
           <button
             onClick={() => setShowSettings(true)}
@@ -897,6 +1002,181 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      {/* Analytics Modal */}
+      {showAnalyticsModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-[920px] overflow-hidden max-h-[92vh] flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center shrink-0">
+              <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                <BarChart3 size={18} className="text-green-600" /> 数据分析
+              </h2>
+              <button onClick={() => setShowAnalyticsModal(false)} className="text-gray-500 hover:text-gray-700">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5 overflow-y-auto">
+              <div className="flex flex-wrap items-end gap-3 rounded-md border border-gray-200 bg-gray-50 p-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">分析范围</label>
+                  <div className="grid grid-cols-3 gap-1 rounded-md bg-gray-100 p-1">
+                    {[7, 15, 30].map((days) => (
+                      <button
+                        key={days}
+                        type="button"
+                        onClick={() => setAnalyticsDays(days)}
+                        className={`px-3 py-2 text-sm font-medium rounded transition-colors ${analyticsDays === days ? 'bg-white text-green-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
+                      >
+                        近 {days} 天
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleLoadAnalytics}
+                  disabled={analyticsLoading}
+                  className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {analyticsLoading ? (
+                    <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>读取中...</>
+                  ) : (
+                    <><BarChart3 size={16} /> 读取报告</>
+                  )}
+                </button>
+                <p className="text-xs text-gray-500 flex-1 min-w-[220px]">
+                  只读取微信 DataCube 统计数据，不修改文章、不推送、不删除。数据通常在每天上午 8 点后稳定。
+                </p>
+              </div>
+
+              {analyticsError && (
+                <div className="p-3 bg-red-50 text-red-700 text-sm rounded-md border border-red-200 break-words">{analyticsError}</div>
+              )}
+
+              {!analyticsReport && !analyticsError && (
+                <div className="rounded-md border border-gray-200 bg-white p-6 text-sm text-gray-600">
+                  选择范围后点击「读取报告」，系统会读取已发布内容的阅读、分享、收藏和用户增长数据。
+                </div>
+              )}
+
+              {analyticsReport && (
+                <div className="space-y-5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-base font-semibold text-gray-800">
+                        {analyticsReport.range.startDate} 至 {analyticsReport.range.endDate}
+                      </h3>
+                      <p className="text-xs text-gray-500 mt-1">已发布内容统计，按日汇总</p>
+                    </div>
+                    <span className="text-xs text-gray-500">共 {analyticsReport.range.days} 天</span>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-3">
+                    {[
+                      ['文章数', analyticsReport.totals.articleCount],
+                      ['阅读人数', analyticsReport.totals.readUsers],
+                      ['分享人数', analyticsReport.totals.shareUsers],
+                      ['收藏', analyticsReport.totals.collections],
+                      ['新增关注', analyticsReport.totals.newUsers],
+                      ['取消关注', analyticsReport.totals.cancelUsers],
+                      ['净增关注', analyticsReport.totals.netUsers],
+                      ['累计关注', analyticsReport.totals.latestCumulateUsers],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-md border border-gray-200 bg-white p-3">
+                        <div className="text-xs text-gray-500">{label}</div>
+                        <div className="mt-1 text-xl font-semibold text-gray-800">{formatCount(value as number)}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="rounded-md border border-gray-200 bg-white p-4">
+                      <h3 className="text-sm font-semibold text-gray-800 mb-3">栏目表现</h3>
+                      <div className="space-y-2">
+                        {analyticsReport.categoryPerformance.length === 0 && (
+                          <p className="text-sm text-gray-500">暂无栏目数据</p>
+                        )}
+                        {analyticsReport.categoryPerformance.slice(0, 8).map((category) => (
+                          <div key={category.name} className="flex items-center justify-between gap-3 text-sm">
+                            <div>
+                              <span className="font-medium text-gray-800">{category.name}</span>
+                              <span className="ml-2 text-xs text-gray-500">{category.articles} 篇</span>
+                            </div>
+                            <div className="text-right">
+                              <div className="font-medium text-gray-800">{formatCount(category.readUsers)}</div>
+                              <div className="text-xs text-gray-500">分享率 {formatPercent(category.shareRate)}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-md border border-gray-200 bg-white p-4">
+                      <h3 className="text-sm font-semibold text-gray-800 mb-3">内容建议</h3>
+                      <div className="space-y-2">
+                        {analyticsReport.recommendations.map((item, index) => (
+                          <p key={`${item}-${index}`} className="text-sm leading-6 text-gray-700">{item}</p>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-gray-200 bg-white overflow-hidden">
+                    <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+                      <h3 className="text-sm font-semibold text-gray-800">文章排行</h3>
+                      <span className="text-xs text-gray-500">按阅读人数排序</span>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50 text-xs text-gray-500">
+                          <tr>
+                            <th className="px-4 py-2 text-left font-medium">标题</th>
+                            <th className="px-4 py-2 text-right font-medium">阅读</th>
+                            <th className="px-4 py-2 text-right font-medium">分享</th>
+                            <th className="px-4 py-2 text-right font-medium">收藏</th>
+                            <th className="px-4 py-2 text-right font-medium">关注</th>
+                            <th className="px-4 py-2 text-right font-medium">分享率</th>
+                            <th className="px-4 py-2 text-right font-medium">读完率</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {analyticsReport.topArticles.length === 0 && (
+                            <tr>
+                              <td colSpan={7} className="px-4 py-6 text-center text-gray-500">暂无文章明细</td>
+                            </tr>
+                          )}
+                          {analyticsReport.topArticles.map((article) => (
+                            <tr key={article.msgid} className="border-t border-gray-100">
+                              <td className="px-4 py-3 text-gray-800 max-w-[320px]">
+                                <div className="font-medium truncate">{article.title}</div>
+                                <div className="text-xs text-gray-500 mt-1">{article.categories.join(' / ')}</div>
+                              </td>
+                              <td className="px-4 py-3 text-right text-gray-700">{formatCount(article.readUsers)}</td>
+                              <td className="px-4 py-3 text-right text-gray-700">{formatCount(article.shareUsers)}</td>
+                              <td className="px-4 py-3 text-right text-gray-700">{formatCount(article.collections)}</td>
+                              <td className="px-4 py-3 text-right text-gray-700">{formatCount(article.readSubscribeUsers)}</td>
+                              <td className="px-4 py-3 text-right text-gray-700">{formatPercent(article.shareRate)}</td>
+                              <td className="px-4 py-3 text-right text-gray-700">{article.avgFinishRate > 0 ? formatPercent(article.avgFinishRate) : '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {(analyticsReport.errors.length > 0 || analyticsReport.notes.length > 0) && (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 space-y-1">
+                      {analyticsReport.notes.map((note) => <p key={note}>{note}</p>)}
+                      {analyticsReport.errors.map((error) => <p key={error}>接口提示：{error}</p>)}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Settings Modal */}
       {showSettings && (

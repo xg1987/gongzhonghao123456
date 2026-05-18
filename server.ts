@@ -16,6 +16,7 @@ const require = createRequire(import.meta.url);
 const ffmpegPath = (require('ffmpeg-static') as string | null) || 'ffmpeg';
 const MAX_STORY_AUDIO_BYTES = 50 * 1024 * 1024;
 const MAX_WECHAT_VIDEO_BYTES = 10 * 1024 * 1024;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -88,6 +89,242 @@ async function convertStoryAudioToVideo(inputPath: string, outputPath: string) {
 function formatBytes(size: number) {
   if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)}MB`;
   return `${Math.max(1, Math.round(size / 1024))}KB`;
+}
+
+function toDateString(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(dateText: string, days: number) {
+  return toDateString(new Date(Date.parse(`${dateText}T00:00:00.000Z`) + days * DAY_MS));
+}
+
+function getChinaDateOffset(daysOffset: number) {
+  const chinaNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const utcDate = new Date(Date.UTC(chinaNow.getUTCFullYear(), chinaNow.getUTCMonth(), chinaNow.getUTCDate()));
+  return toDateString(new Date(utcDate.getTime() + daysOffset * DAY_MS));
+}
+
+function listDates(startDate: string, endDate: string) {
+  const dates: string[] = [];
+  for (let cursor = startDate; cursor <= endDate; cursor = addDays(cursor, 1)) {
+    dates.push(cursor);
+  }
+  return dates;
+}
+
+function chunkDateRange(startDate: string, endDate: string, maxDays: number) {
+  const chunks: { beginDate: string; endDate: string }[] = [];
+  let cursor = startDate;
+  while (cursor <= endDate) {
+    const chunkEnd = addDays(cursor, maxDays - 1);
+    const safeEnd = chunkEnd > endDate ? endDate : chunkEnd;
+    chunks.push({ beginDate: cursor, endDate: safeEnd });
+    cursor = addDays(safeEnd, 1);
+  }
+  return chunks;
+}
+
+function num(value: any) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function pct(numerator: number, denominator: number) {
+  return denominator > 0 ? Number((numerator / denominator).toFixed(4)) : 0;
+}
+
+function detectContentCategories(title: string) {
+  const categoryWords: Record<string, string[]> = {
+    紫微: ['紫微', '命宫', '财帛', '夫妻宫', '官禄', '迁移', '天府', '武曲', '破军', '流年', '大限'],
+    八字: ['八字', '日主', '十神', '格局', '喜用神', '大运', '流月'],
+    五行: ['五行', '金木水火土', '金命', '木命', '水命', '火命', '土命'],
+    婚姻: ['婚姻', '感情', '桃花', '姻缘', '伴侣', '复合', '夫妻'],
+    财运: ['财运', '财富', '赚钱', '正财', '偏财', '投资', '生意', '收入'],
+    事业: ['事业', '职场', '工作', '升职', '创业', '贵人', '领导'],
+    健康: ['健康', '养生', '疾病', '体质', '睡眠', '情绪'],
+  };
+
+  const matched = Object.entries(categoryWords)
+    .filter(([, words]) => words.some((word) => title.includes(word)))
+    .map(([name]) => name);
+  return matched.length > 0 ? matched : ['其他'];
+}
+
+function callWeChatDatacube(token: string, endpoint: string, beginDate: string, endDate: string) {
+  const url = `https://api.weixin.qq.com/datacube/${endpoint}?access_token=${token}`;
+  return axios.post(url, { begin_date: beginDate, end_date: endDate }, { timeout: 20000 });
+}
+
+async function fetchDatacubeList(token: string, endpoint: string, beginDate: string, endDate: string) {
+  const response = await callWeChatDatacube(token, endpoint, beginDate, endDate);
+  const data = response.data || {};
+  if (data.errcode && data.errcode !== 0) {
+    throw new Error(`${endpoint}: ${data.errmsg || '接口返回错误'} (错误码: ${data.errcode})`);
+  }
+  return Array.isArray(data.list) ? data.list : [];
+}
+
+function ingestArticleMetric(store: Map<string, any>, article: any, metric: any) {
+  const title = article.title || metric.title || '未命名文章';
+  const msgid = article.msgid || metric.msgid || `${title}-${article.ref_date || metric.ref_date || metric.stat_date || 'unknown'}`;
+  const existing = store.get(msgid) || {
+    msgid,
+    title,
+    contentUrl: article.content_url || metric.content_url || '',
+    publishDate: article.ref_date || metric.ref_date || '',
+    readUsers: 0,
+    readCount: 0,
+    shareUsers: 0,
+    shareCount: 0,
+    collections: 0,
+    likes: 0,
+    zaikan: 0,
+    comments: 0,
+    readSubscribeUsers: 0,
+    finishRateSum: 0,
+    finishRateSamples: 0,
+  };
+
+  existing.readUsers += num(metric.read_user ?? metric.int_page_read_user);
+  existing.readCount += num(metric.read_count ?? metric.int_page_read_count);
+  existing.shareUsers += num(metric.share_user);
+  existing.shareCount += num(metric.share_count);
+  existing.collections += num(metric.collection_user ?? metric.add_to_fav_user ?? metric.add_to_fav_count);
+  existing.likes += num(metric.like_user);
+  existing.zaikan += num(metric.zaikan_user);
+  existing.comments += num(metric.comment_count);
+  existing.readSubscribeUsers += num(metric.read_subscribe_user);
+  const finishRate = num(metric.read_finish_rate);
+  if (finishRate > 0) {
+    existing.finishRateSum += finishRate;
+    existing.finishRateSamples += 1;
+  }
+
+  store.set(msgid, existing);
+}
+
+function buildAnalyticsReport(params: {
+  startDate: string;
+  endDate: string;
+  days: number;
+  articleDetail: any[];
+  articleFallback: any[];
+  bizSummary: any[];
+  userSummary: any[];
+  userCumulate: any[];
+  errors: string[];
+}) {
+  const articleMap = new Map<string, any>();
+
+  params.articleDetail.forEach((article) => {
+    const details = Array.isArray(article.detail_list) ? article.detail_list : [article];
+    details.forEach((detail) => ingestArticleMetric(articleMap, article, detail));
+  });
+
+  if (articleMap.size === 0) {
+    params.articleFallback.forEach((article) => ingestArticleMetric(articleMap, article, article));
+  }
+
+  const articles = Array.from(articleMap.values()).map((article) => ({
+    ...article,
+    categories: detectContentCategories(article.title),
+    shareRate: pct(article.shareUsers, article.readUsers),
+    collectionRate: pct(article.collections, article.readUsers),
+    subscribeRate: pct(article.readSubscribeUsers, article.readUsers),
+    avgFinishRate: article.finishRateSamples > 0 ? Number((article.finishRateSum / article.finishRateSamples).toFixed(4)) : 0,
+  })).sort((a, b) => b.readUsers - a.readUsers);
+
+  const totals = articles.reduce((sum, article) => {
+    sum.readUsers += article.readUsers;
+    sum.readCount += article.readCount;
+    sum.shareUsers += article.shareUsers;
+    sum.shareCount += article.shareCount;
+    sum.collections += article.collections;
+    sum.likes += article.likes;
+    sum.zaikan += article.zaikan;
+    sum.comments += article.comments;
+    sum.readSubscribeUsers += article.readSubscribeUsers;
+    return sum;
+  }, {
+    articleCount: articles.length,
+    readUsers: 0,
+    readCount: 0,
+    shareUsers: 0,
+    shareCount: 0,
+    collections: 0,
+    likes: 0,
+    zaikan: 0,
+    comments: 0,
+    readSubscribeUsers: 0,
+    newUsers: 0,
+    cancelUsers: 0,
+    netUsers: 0,
+    latestCumulateUsers: 0,
+  });
+
+  params.userSummary.forEach((item) => {
+    totals.newUsers += num(item.new_user);
+    totals.cancelUsers += num(item.cancel_user);
+  });
+  totals.netUsers = totals.newUsers - totals.cancelUsers;
+
+  const sortedCumulate = [...params.userCumulate].sort((a, b) => String(a.ref_date).localeCompare(String(b.ref_date)));
+  totals.latestCumulateUsers = sortedCumulate.length > 0 ? num(sortedCumulate[sortedCumulate.length - 1].cumulate_user) : 0;
+
+  const categoryMap = new Map<string, any>();
+  articles.forEach((article) => {
+    article.categories.forEach((category: string) => {
+      const current = categoryMap.get(category) || { name: category, articles: 0, readUsers: 0, shareUsers: 0, collections: 0 };
+      current.articles += 1;
+      current.readUsers += article.readUsers;
+      current.shareUsers += article.shareUsers;
+      current.collections += article.collections;
+      categoryMap.set(category, current);
+    });
+  });
+  const categoryPerformance = Array.from(categoryMap.values()).map((category) => ({
+    ...category,
+    avgReadUsers: category.articles > 0 ? Math.round(category.readUsers / category.articles) : 0,
+    shareRate: pct(category.shareUsers, category.readUsers),
+    collectionRate: pct(category.collections, category.readUsers),
+  })).sort((a, b) => b.readUsers - a.readUsers);
+
+  const bestRead = articles[0];
+  const bestShare = [...articles].sort((a, b) => b.shareRate - a.shareRate)[0];
+  const bestCategory = categoryPerformance[0];
+  const recommendations = [
+    bestRead ? `阅读最高的是《${bestRead.title}》，可拆成系列选题继续追同类标题结构。` : '这段时间没有拿到文章明细，先确认账号是否有图文分析接口权限。',
+    bestShare && bestShare.shareUsers > 0 ? `分享率较好的题目是《${bestShare.title}》，适合复盘开头钩子和转发动机。` : '暂未看到明显分享数据，标题里可增加更强的身份代入和转发理由。',
+    bestCategory ? `${bestCategory.name} 类内容当前贡献最高，建议下一轮先围绕这个栏目做连续 3-5 篇测试。` : '栏目样本不足，建议保持标题里出现清晰栏目词，方便后续统计。',
+    totals.netUsers < 0 ? '近段时间净增关注为负，需检查标题承诺与正文满足度，减少只吸引点击但不沉淀关注的选题。' : '近段时间关注净增为正，可以把高阅读文章末尾强化关注理由。',
+  ];
+
+  const notes = [
+    '数据来自微信 DataCube，只读取已发表/已群发内容，不读取草稿箱。',
+    '微信官方建议每天上午 8 点后查询前一天数据。',
+    '过小阅读量的内容可能不会返回完整图文统计。',
+  ];
+
+  return {
+    range: {
+      startDate: params.startDate,
+      endDate: params.endDate,
+      days: params.days,
+      generatedAt: new Date().toISOString(),
+    },
+    totals,
+    topArticles: articles.slice(0, 10),
+    categoryPerformance,
+    userTrend: {
+      summary: params.userSummary,
+      cumulate: params.userCumulate,
+    },
+    bizSummary: params.bizSummary,
+    recommendations,
+    notes,
+    errors: params.errors,
+  };
 }
 
 // Helper to get WeChat Access Token
@@ -522,6 +759,81 @@ app.post('/api/wechat/push-draft', async (req, res) => {
     }
 
     res.json({ success: true, mediaId: response.data.media_id });
+  } catch (error: any) {
+    if (error.response && error.response.data) {
+      res.status(500).json({ error: error.response.data.errmsg || error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// API: Read-only WeChat analytics report through DataCube.
+app.post('/api/wechat/analytics/report', async (req, res) => {
+  try {
+    const { appId, appSecret, days = 7 } = req.body || {};
+    const rangeDays = [7, 15, 30].includes(Number(days)) ? Number(days) : 7;
+    if (!appId || !appSecret) throw new Error('请先配置 AppID 和 AppSecret');
+
+    const endDate = getChinaDateOffset(-1);
+    const startDate = addDays(endDate, -(rangeDays - 1));
+    const token = await getAccessToken(appId, appSecret);
+    const errors: string[] = [];
+
+    const articleDetail: any[] = [];
+    const articleFallback: any[] = [];
+    const bizSummary: any[] = [];
+    const userSummary: any[] = [];
+    const userCumulate: any[] = [];
+
+    for (const date of listDates(startDate, endDate)) {
+      try {
+        articleDetail.push(...await fetchDatacubeList(token, 'getarticletotaldetail', date, date));
+      } catch (error: any) {
+        errors.push(error.message);
+      }
+
+      try {
+        bizSummary.push(...await fetchDatacubeList(token, 'getbizsummary', date, date));
+      } catch (error: any) {
+        errors.push(error.message);
+      }
+
+      // Fallback for accounts that do not have the newer detailed endpoint yet.
+      if (articleDetail.length === 0) {
+        try {
+          articleFallback.push(...await fetchDatacubeList(token, 'getarticlesummary', date, date));
+        } catch (error: any) {
+          errors.push(error.message);
+        }
+      }
+    }
+
+    for (const chunk of chunkDateRange(startDate, endDate, 7)) {
+      try {
+        userSummary.push(...await fetchDatacubeList(token, 'getusersummary', chunk.beginDate, chunk.endDate));
+      } catch (error: any) {
+        errors.push(error.message);
+      }
+
+      try {
+        userCumulate.push(...await fetchDatacubeList(token, 'getusercumulate', chunk.beginDate, chunk.endDate));
+      } catch (error: any) {
+        errors.push(error.message);
+      }
+    }
+
+    res.json(buildAnalyticsReport({
+      startDate,
+      endDate,
+      days: rangeDays,
+      articleDetail,
+      articleFallback,
+      bizSummary,
+      userSummary,
+      userCumulate,
+      errors: Array.from(new Set(errors)).slice(0, 12),
+    }));
   } catch (error: any) {
     if (error.response && error.response.data) {
       res.status(500).json({ error: error.response.data.errmsg || error.message });
