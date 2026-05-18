@@ -45,9 +45,3 @@ AUTH_SECRET="一段随机长字符串"
 - `IMAGE_MODEL`，默认 `black-forest-labs/FLUX.1-dev`
 
 微信接口还要求把部署服务的出口 IP 加入微信公众号后台 IP 白名单。
-
-## 访问控制
-
-登录密码必须在部署平台的环境变量里配置，不能写进代码仓库。部署者设置一次 `APP_PASSWORD` 后，把网站地址和这个访问密码发给授权使用者即可。
-
-如果别人 fork 或部署自己的版本，他们需要在自己的 Render 服务里设置自己的 `APP_PASSWORD` 和 `AUTH_SECRET`。
